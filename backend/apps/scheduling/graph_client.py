@@ -315,7 +315,7 @@ def fetch_freebusy(
                 "endDateTime": end_str,
                 "$select": "start,end,showAs",
                 "$top": 1000,
-            })
+            }, headers={"Prefer": 'outlook.timezone="UTC"'})
             if r.status_code != 200:
                 # Log and skip this calendar (e.g. permission denied)
                 logger.warning(

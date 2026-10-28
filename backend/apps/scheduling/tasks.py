@@ -103,6 +103,10 @@ def _sync_google(account_pk: int) -> dict:
         return {"error": str(exc)[:200]}
 
     with transaction.atomic():
+        # select_for_update() serializes concurrent task runs for the same
+        # account: without it, two workers could both delete then both
+        # bulk_create, producing duplicate rows.
+        account = GoogleAccount.objects.select_for_update().get(pk=account_pk)
         OAuthBusyWindow.objects.filter(google_account=account).delete()
         OAuthBusyWindow.objects.bulk_create([
             OAuthBusyWindow(
@@ -152,6 +156,10 @@ def _sync_microsoft(account_pk: int) -> dict:
         return {"error": str(exc)[:200]}
 
     with transaction.atomic():
+        # select_for_update() serializes concurrent task runs for the same
+        # account: without it, two workers could both delete then both
+        # bulk_create, producing duplicate rows.
+        account = MicrosoftAccount.objects.select_for_update().get(pk=account_pk)
         OAuthBusyWindow.objects.filter(microsoft_account=account).delete()
         OAuthBusyWindow.objects.bulk_create([
             OAuthBusyWindow(

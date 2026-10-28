@@ -370,3 +370,113 @@ class OAuthBusyWindowSearchIntegrationTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         people = resp.data["people"]
         self.assertEqual(people[0]["status"], "free")
+
+
+# ---------------------------------------------------------------------------
+# PR #10 must-fix regression tests
+# ---------------------------------------------------------------------------
+
+class ConcurrentSyncIdempotencyTests(TestCase):
+    """PR #10 Fix 1: select_for_update() prevents double-insert on concurrent runs."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="fix1@x.com", password="x" * 12)
+        self.g = GoogleAccount.objects.create(
+            user=self.user,
+            google_email="fix1@gmail.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    @patch("apps.scheduling.google_client.fetch_freebusy")
+    def test_concurrent_runs_do_not_double_insert(self, mock_freebusy, mock_calendars):
+        """Simulate two concurrent task runs by calling sync_one_oauth_account
+        twice back-to-back with identical freebusy results.  The atomic
+        delete+create path must be idempotent: the final OAuthBusyWindow count
+        must equal the single-run count, not 2x.
+
+        (True thread-level concurrency requires a real multi-process DB and is
+        a follow-up. This exercises the delete-then-create cycle twice, which
+        is the dominant failure mode from a race: worker A deletes, worker B
+        deletes-nothing, both create → double rows.)
+        """
+        now = datetime.now(timezone.utc)
+        mock_calendars.return_value = [{"id": "primary"}]
+        mock_freebusy.return_value = [
+            ("primary", now, now + timedelta(hours=1)),
+            ("primary", now + timedelta(hours=2), now + timedelta(hours=3)),
+        ]
+
+        sync_one_oauth_account("google", self.g.pk)
+        # Run again — select_for_update serialises; result must not be 2x.
+        sync_one_oauth_account("google", self.g.pk)
+
+        self.assertEqual(
+            OAuthBusyWindow.objects.filter(google_account=self.g).count(),
+            2,
+            "Two sequential runs of sync must produce 2 rows, not 4 (double-insert guard)",
+        )
+
+
+class GraphClientTimezonePreferHeaderTests(TestCase):
+    """PR #10 Fix 2: fetch_freebusy must send Prefer: outlook.timezone="UTC"."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="fix2@x.com", password="x" * 12)
+        self.ms = MicrosoftAccount.objects.create(
+            user=self.user,
+            microsoft_email="fix2@outlook.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    def test_fetch_freebusy_sends_utc_timezone_preference(self):
+        """Regression: MS Graph must normalize times to UTC via Prefer header.
+        Without it, non-UTC calendar events are silently stored with wrong
+        UTC values (e.g. a 9am Prague event stored as 9am UTC instead of 8am UTC).
+        """
+        from unittest.mock import Mock
+        from apps.scheduling.graph_client import _Credentials, fetch_freebusy
+
+        now = datetime.now(timezone.utc)
+        start = now
+        end = now + timedelta(days=7)
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"value": []}
+
+        mock_client = Mock()
+        mock_client.get.return_value = mock_response
+        mock_client.__enter__ = Mock(return_value=mock_client)
+        mock_client.__exit__ = Mock(return_value=False)
+
+        fake_creds = _Credentials(
+            access_token="test-token",
+            expires_at=now + timedelta(hours=1),
+        )
+
+        with patch("apps.scheduling.graph_client.get_credentials", return_value=fake_creds):
+            with patch("apps.scheduling.graph_client._bearer", return_value=mock_client):
+                fetch_freebusy(self.ms, ["primary"], start, end)
+
+        self.assertTrue(
+            mock_client.get.called,
+            "graph_client.fetch_freebusy must call client.get",
+        )
+        call_kwargs = mock_client.get.call_args
+        # headers is passed as a keyword argument
+        headers = call_kwargs.kwargs.get("headers") or {}
+        self.assertIn(
+            "Prefer",
+            headers,
+            "fetch_freebusy must pass a Prefer header to the Graph calendarView request",
+        )
+        self.assertEqual(
+            headers["Prefer"],
+            'outlook.timezone="UTC"',
+            'Prefer header must be exactly: outlook.timezone="UTC"',
+        )
