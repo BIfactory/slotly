@@ -126,29 +126,43 @@ Uložit.
 
 ---
 
-## Rotace secretu
+## Rotation (every 24 months — set a calendar reminder 30 days before 2028-10-28)
 
-Provést nejpozději **2028-09-28** (měsíc před expirací `2028-10-28`).
+The current secret expires on **2028-10-28**. Rotation is zero-downtime when done via `credential add` (always additive):
+
+### Step 1: Add a new credential alongside the current one
 
 ```bash
 APP_OBJECT_ID="684906d1-2733-49d6-a67d-28d0545ba205"
-
-# 1. Vytvoř nový secret (starý zůstane platný do konce jeho platnosti)
-az ad app credential reset --id "$APP_OBJECT_ID" --years 2 \
-  --query "{secret:password, endDateTime:endDateTime}" -o json
-
-# 2. Ulož nový secret do infra/.secrets/microsoft_oauth
-
-# 3. Nasaď nový secret do Container App (viz infra/deploy.sh ms-oauth-env)
-./infra/deploy.sh ms-oauth-env
-
-# 4. Ověř že app funguje (302 na microsoft login, ne 503)
-curl -sI https://api.slotly.team/api/oauth/microsoft/start
-
-# 5. Smaž starý secret z Azure Portal (Certificates & secrets → delete)
+az ad app credential reset \
+  --id "$APP_OBJECT_ID" \
+  --append \
+  --years 2 \
+  --display-name "slotly-oauth-$(date +%Y%m%d)" \
+  --query "{secret:password, endDateTime:endDateTime, keyId:keyId}" -o json
 ```
 
-Přidej si do kalendáře: **2028-09-28 — rotovat MICROSOFT_OAUTH_CLIENT_SECRET**
+The `--append` flag is critical — it adds a new credential without touching the existing one. On older `az` CLI (< 2.37) that doesn't support `--append`, use `az ad app credential add` instead. Verify your CLI version first: `az --version | head -1`.
+
+Save the new `secret` + `keyId` for later.
+
+### Step 2: Deploy the new secret to Container App
+
+```bash
+# Update the secret file in infra/.secrets/microsoft_oauth
+./infra/deploy.sh ms-oauth-env
+```
+
+### Step 3: Verify the new secret works, then delete the old credential
+
+Wait until the Container App revision is healthy (check `az containerapp revision list -g slotly-prod -n slotly-backend --query "[-1].properties.healthState"`). Then delete the old credential by its `keyId`:
+
+```bash
+OLD_KEY_ID="<the keyId from the previous rotation, see Portal history>"
+az ad app credential delete --id "$APP_OBJECT_ID" --key-id "$OLD_KEY_ID"
+```
+
+**Downtime window:** zero. The old secret remains valid until Step 3.
 
 ---
 

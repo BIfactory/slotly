@@ -260,10 +260,10 @@ function CalendarsPageInner() {
           (reason === "admin_consent_required" ? (
             <Banner kind="err">
               Your IT admin needs to approve Slotly for your organization before
-              you can connect. Ask them to visit:{" "}
-              <code className="text-xs">
-                https://login.microsoftonline.com/&lt;tenant-id&gt;/adminconsent?client_id=de731224-93d5-4c37-8e53-e31e31fa478e
-              </code>
+              you can connect. Ask them to sign in to{" "}
+              <strong>Microsoft Entra admin center</strong> → Enterprise
+              applications → search for &ldquo;Slotly&rdquo; → grant admin
+              consent for your organization.
             </Banner>
           ) : (
             <Banner kind="err">

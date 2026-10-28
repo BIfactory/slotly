@@ -12,6 +12,26 @@ Redirect URI se u obou providerů registrují na backend, ne na frontend.
 
 ---
 
+## Microsoft OAuth
+
+**App registration:** See `infra/azure-ad-app-registration.md` for the Azure AD app creation steps, Container App env wiring, and secret rotation runbook.
+
+**Scopes requested:**
+- `offline_access` — refresh token for background sync
+- `User.Read` — profile identity (name + email)
+- `Calendars.Read` — free/busy intervals (no event titles, descriptions, or attendees)
+- `Calendars.ReadWrite` — create events on explicit booking
+
+**Verification:** See `docs/microsoft-verification.md` for the publisher-verification workflow (optional until beta scales).
+
+**Supported account types:** work/school Microsoft 365 (any tenant, multi-tenant audience) + personal Outlook.com / outlook.live.com.
+
+**Known constraints:**
+- Enterprise tenants may require admin consent before any user in the tenant can grant Slotly access. The frontend shows an "Your IT admin needs to approve Slotly" banner when the OAuth flow returns `AADSTS65001`.
+- Logo (240×240 PNG max 100KB) and Terms/Privacy URLs are set manually in the Azure Portal under App registrations → Slotly → Branding & properties — these cannot be set via `az` CLI for multi-tenant apps.
+
+---
+
 ## 1. Google Cloud Console
 
 1. Otevři <https://console.cloud.google.com> a vyber (nebo vytvoř) projekt
