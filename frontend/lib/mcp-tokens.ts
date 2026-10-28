@@ -4,6 +4,8 @@
  * /mcp/v1/* only.
  */
 
+import { refreshCsrf } from "./api";
+
 export type McpTokenScope =
   | "list_teams"
   | "list_members"
@@ -102,18 +104,20 @@ async function doFetch(path: string, init: RequestInit): Promise<Response> {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let res = await doFetch(path, init);
 
-  // Recovery for a stale csrftoken cookie (e.g. the user signed in before
-  // the login/signup flow was updated to refresh CSRF explicitly, so the
-  // cookie value stored by the browser no longer matches Django's rotated
-  // session token). DRF SessionAuthentication fails these with 403 +
-  // "CSRF Failed:" detail. Fetch a fresh cookie from the allauth config
-  // endpoint and retry once.
+  // Recovery for a stale csrftoken cookie (user signed in before the
+  // login/signup flow was updated to refresh CSRF explicitly). Delete
+  // the cookie first — Django leaves well-formed csrftoken cookies alone
+  // on GET /_allauth/browser/v1/config even when they don't match the
+  // current session secret, so just fetching config without clearing
+  // doesn't actually refresh anything. Delete → fetch → the server sees
+  // the cookie missing, generates a new token matching the current
+  // session, and emits Set-Cookie. Retry once.
   const method = (init.method ?? "GET").toUpperCase();
   if (method !== "GET" && res.status === 403) {
     const peek = await res.clone().text().catch(() => "");
     if (peek.includes("CSRF")) {
       try {
-        await fetch("/_allauth/browser/v1/config", { credentials: "include" });
+        await refreshCsrf();
       } catch {
         // Ignore — fallthrough will surface the original 403 to the caller.
       }
