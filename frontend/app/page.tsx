@@ -525,6 +525,12 @@ function GuestLanding() {
                 the people you&apos;re trying to meet are all available.
               </li>
               <li>
+                <strong>Your list of calendars</strong> — to show you a picker
+                for which calendar Slotly should write new meetings into (many
+                users keep work and personal calendars separate). We read the
+                list only; event contents are never read through this scope.
+              </li>
+              <li>
                 <strong>Create calendar events</strong> — only when you or a
                 visitor of your public link explicitly books a meeting.
               </li>
