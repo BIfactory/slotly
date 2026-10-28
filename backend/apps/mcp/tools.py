@@ -597,9 +597,10 @@ def update_booking(user, params):
 
     # Validate at least one of (start/end/title) was given.
     has_time = "start" in params or "end" in params
-    has_title = "title" in params and params["title"] is not None
+    raw_title = params.get("title")
+    has_title = raw_title is not None and isinstance(raw_title, str) and raw_title.strip() != ""
     if not (has_time or has_title):
-        raise ValidationError({"detail": "nothing to update — provide start/end and/or title"})
+        raise ValidationError({"detail": "nothing to update — provide start/end and/or non-empty title"})
 
     start = _parse_dt(params["start"], "start") if "start" in params else None
     end = _parse_dt(params["end"], "end") if "end" in params else None
@@ -608,9 +609,10 @@ def update_booking(user, params):
     if (start is None) != (end is None):
         raise ValidationError({"detail": "start and end must be provided together"})
 
-    title = params.get("title")
-    if title is not None and not isinstance(title, str):
+    if raw_title is not None and not isinstance(raw_title, str):
         raise ValidationError({"title": "must be a string"})
+
+    title = raw_title.strip() if has_title else None
 
     return _svc_update_booking(
         host_user=user,

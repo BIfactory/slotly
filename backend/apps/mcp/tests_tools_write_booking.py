@@ -455,6 +455,15 @@ class UpdateBookingTests(APITestCase):
             })
         self.assertEqual(resp.status_code, 200)
 
+    def test_update_booking_empty_title_only(self):
+        """Empty-string title with no start/end → 400 'nothing to update'."""
+        booking_uuid = self._make_booking()
+        resp = self._call({"booking_uuid": booking_uuid, "title": ""})
+        self.assertEqual(resp.status_code, 400)
+        data = resp.json()
+        self.assertEqual(data["error"], "validation_error")
+        self.assertIn("nothing to update", str(data.get("detail", "")))
+
 
 # ---------------------------------------------------------------------------
 # cancel_booking tests
