@@ -155,26 +155,26 @@ function CalendarsPageInner() {
   }, [calendars]);
 
   const handleSetDefault = useCallback(async (id: string) => {
+    // Capture snapshot before optimistic update.
+    const snapshot = accounts;
+
     // Optimistic update.
     setAccounts((prev) => prev.map((a) => ({ ...a, is_default: a.id === id })));
     try {
       await setDefaultAccount(id);
     } catch (err) {
-      // Revert on error.
-      setAccounts((prev) => {
-        // We can't restore the old is_default without knowing what it was.
-        // Re-fetch to get the real state from the server.
-        listCalendarAccounts()
-          .then(setAccounts)
-          .catch(() => {});
-        return prev;
-      });
+      // Revert to snapshot immediately on error.
+      setAccounts(snapshot);
+      // Optionally still re-fetch for defensive sync.
+      listCalendarAccounts()
+        .then(setAccounts)
+        .catch(() => {});
       setAccountsError(
         err instanceof Error ? err.message : "Couldn't set default account.",
       );
       setTimeout(() => setAccountsError(null), 5000);
     }
-  }, []);
+  }, [accounts]);
 
   const handleDisconnect = useCallback(async (id: string) => {
     const account = accounts.find((a) => a.id === id);
