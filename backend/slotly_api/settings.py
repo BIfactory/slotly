@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "apps.notifications",
     "apps.connections",
     "apps.scheduling",
+    "apps.mcp",
 ]
 
 SITE_ID = 1

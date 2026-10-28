@@ -94,3 +94,9 @@ coverage/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# --- Git worktrees (project-local, never commit) ---
+.worktrees/
+
+# --- Superpowers SDD scratch (per-plan ledger & briefs) ---
+.superpowers/

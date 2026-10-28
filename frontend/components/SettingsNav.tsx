@@ -16,6 +16,7 @@ import {
   Bell,
   CalendarDays,
   Clock,
+  KeyRound,
   Layers,
   UserCircle,
   UserCog,
@@ -37,6 +38,7 @@ const TABS: SettingsTab[] = [
   { href: "/settings/calendars", label: "Calendars", icon: CalendarDays, activePath: "/settings/calendars" },
   { href: "/settings/meeting-types", label: "Meeting types", icon: Layers, activePath: "/settings/meeting-types" },
   { href: "/settings/notifications", label: "Notifications", icon: Bell, activePath: "/settings/notifications" },
+  { href: "/settings/api-tokens", label: "API tokens", icon: KeyRound, activePath: "/settings/api-tokens" },
   { href: "/settings/account", label: "Account", icon: UserCog, activePath: "/settings/account" },
 ];
 
