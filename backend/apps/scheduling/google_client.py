@@ -257,6 +257,71 @@ def list_writable_calendars(user, account: "GoogleAccount | None" = None) -> lis
     ]
 
 
+def list_all_calendars(account: "GoogleAccount") -> list[dict]:
+    """Return all calendarList entries for this OAuth account (read-side — not
+    filtered to writable). Each item: {id, summary, primary, access_role}.
+    Used by the freebusy sync to discover every calendar the account can see.
+    """
+    creds = get_credentials(account.user, account.id)
+    with bearer_session(creds) as client:
+        r = client.get("/calendar/v3/users/me/calendarList")
+    if r.status_code != 200:
+        raise GoogleApiError(r.status_code, f"calendarList: {r.text[:200]}")
+    items = r.json().get("items", [])
+    return [
+        {
+            "id": it["id"],
+            "summary": it.get("summary", ""),
+            "primary": bool(it.get("primary", False)),
+            "access_role": it.get("accessRole", ""),
+        }
+        for it in items
+        if not it.get("deleted")
+    ]
+
+
+def fetch_freebusy(
+    account: "GoogleAccount",
+    calendar_ids: list[str],
+    start: datetime,
+    end: datetime,
+) -> list[tuple[str, datetime, datetime]]:
+    """POST /calendar/v3/freeBusy for the given calendar IDs.
+
+    Returns a list of (calendar_id, starts_at, ends_at) for every busy
+    interval in the window. Transparent events are NOT returned by Google
+    (they honour the freebusy API semantics).
+
+    Google allows up to 50 items per request (rate limit). Callers that may
+    have more than 50 calendars should batch; the typical personal/professional
+    account has far fewer.
+    """
+    creds = get_credentials(account.user, account.id)
+    body = {
+        "timeMin": start.isoformat(),
+        "timeMax": end.isoformat(),
+        "items": [{"id": cid} for cid in calendar_ids],
+    }
+    with bearer_session(creds) as client:
+        r = client.post("/calendar/v3/freeBusy", json=body)
+    if r.status_code != 200:
+        raise GoogleApiError(r.status_code, f"freeBusy: {r.text[:200]}")
+    out: list[tuple[str, datetime, datetime]] = []
+    for cid, data in r.json().get("calendars", {}).items():
+        for busy in data.get("busy", []):
+            out.append((cid, _parse_rfc3339(busy["start"]), _parse_rfc3339(busy["end"])))
+    return out
+
+
+def _parse_rfc3339(s: str) -> datetime:
+    """Parse an RFC-3339 timestamp string to a timezone-aware datetime.
+    Handles both ``Z`` suffix and ``+00:00`` offset formats.
+    """
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return datetime.fromisoformat(s)
+
+
 def create_calendar_event(
     user,
     *,
