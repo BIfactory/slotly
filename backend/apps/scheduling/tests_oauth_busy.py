@@ -318,7 +318,6 @@ class OAuthBusyWindowSearchIntegrationTests(TestCase):
         self.user = User.objects.create_user(email="eve@x.com", password="x" * 12)
         self.team = Team.objects.create(name="T", created_by=self.user)
         Membership.objects.create(team=self.team, user=self.user)
-        self.client.force_login(self.user)
 
         self.g = GoogleAccount.objects.create(
             user=self.user,
