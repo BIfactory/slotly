@@ -106,13 +106,29 @@ class ToolsCallView(MCPAPIView):
 
         # Store idempotency record after successful write dispatch.
         if idem_key is not None:
-            idempotency.store(
-                token,
-                idem_key,
-                tool.name,
-                result,
-                booking_uuid=result.get("booking_uuid") if isinstance(result, dict) else None,
-            )
+            booking_uuid = None
+            if isinstance(result, dict):
+                raw = result.get("booking_uuid")
+                # Only pass through non-empty strings; other types (int, None,
+                # empty string) would silently fail UUIDField coercion at the DB
+                # layer and raise DataError — not caught by store()'s IntegrityError
+                # guard. Losing the convenience field is a non-fatal degradation.
+                if isinstance(raw, str) and raw:
+                    booking_uuid = raw
+            try:
+                idempotency.store(
+                    token,
+                    idem_key,
+                    tool.name,
+                    result,
+                    booking_uuid=booking_uuid,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "idempotency.store failed for key=%s capability=%s",
+                    idem_key,
+                    tool.name,
+                )
 
         return Response({"result": result})
 

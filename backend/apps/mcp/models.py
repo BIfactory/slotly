@@ -94,7 +94,6 @@ class IdempotencyRecord(models.Model):
             models.UniqueConstraint(fields=("token", "key"), name="unique_idempotency_per_token"),
         ]
         indexes = [
-            models.Index(fields=("token", "key")),
             models.Index(fields=["-created_at"]),
         ]
         ordering = ("-created_at",)
