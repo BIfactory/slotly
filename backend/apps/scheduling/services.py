@@ -415,7 +415,10 @@ def update_booking(
         booking.reminded_at = None
         booking.save(update_fields=["event_id", "start_at", "end_at", "title", "reminded_at"])
 
-        _notify_booking_rescheduled(booking, old_start)
+        # NOTE: host-initiated reschedule — intentionally does NOT fire
+        # _notify_booking_rescheduled (which is written for the visitor-initiated
+        # case and would send "the visitor moved your booking" to the host).
+        # A proper BOOKING_UPDATED_BY_HOST notification type is a follow-up task.
 
         return {
             "booking_uuid": str(booking.uuid),
