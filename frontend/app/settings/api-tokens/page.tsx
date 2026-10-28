@@ -12,12 +12,13 @@ import {
   type McpToken,
   type McpTokenCall,
   type McpTokenCreated,
-  MCP_TOKEN_SCOPES,
-  MCP_TOKEN_SCOPE_LABELS,
   type McpTokenScope,
+  type McpTokenScopeChoice,
+  MCP_SCOPE_CHOICES_FALLBACK,
   McpTokenApiError,
   createMcpToken,
   listMcpTokenCalls,
+  listMcpTokenScopes,
   listMcpTokens,
   revokeMcpToken,
 } from "@/lib/mcp-tokens";
@@ -46,6 +47,7 @@ function ApiTokensPageInner() {
   const [loaded, setLoaded] = useState(false);
   const [email, setEmail] = useState<string>("");
   const [tokens, setTokens] = useState<McpToken[]>([]);
+  const [scopeChoices, setScopeChoices] = useState<McpTokenScopeChoice[]>(MCP_SCOPE_CHOICES_FALLBACK);
   const [justCreated, setJustCreated] = useState<McpTokenCreated | null>(null);
   const [callsModal, setCallsModal] = useState<{
     token: McpToken;
@@ -60,8 +62,15 @@ function ApiTokensPageInner() {
         return;
       }
       setEmail(session.data?.user?.email ?? "");
-      const tkns = await listMcpTokens();
+      const [tkns, choices] = await Promise.all([
+        listMcpTokens(),
+        listMcpTokenScopes().catch((err) => {
+          console.error("[mcp-tokens] Failed to load scope choices, using fallback:", err);
+          return MCP_SCOPE_CHOICES_FALLBACK;
+        }),
+      ]);
       setTokens(tkns);
+      setScopeChoices(choices);
       setLoaded(true);
     })().catch(() => router.replace("/auth/login"));
   }, [router]);
@@ -129,7 +138,7 @@ function ApiTokensPageInner() {
         )}
 
         {/* Create form */}
-        <CreateTokenForm onCreated={onTokenCreated} />
+        <CreateTokenForm onCreated={onTokenCreated} scopeChoices={scopeChoices} />
 
         {/* Token table */}
         <section className="space-y-3">
@@ -218,11 +227,21 @@ function RawTokenBanner({ raw, onDismiss }: { raw: string; onDismiss: () => void
 // Create token form
 // ---------------------------------------------------------------------------
 
-function CreateTokenForm({ onCreated }: { onCreated: (t: McpTokenCreated) => void }) {
+function CreateTokenForm({
+  onCreated,
+  scopeChoices,
+}: {
+  onCreated: (t: McpTokenCreated) => void;
+  scopeChoices: McpTokenScopeChoice[];
+}) {
   const [name, setName] = useState("");
   const [scopes, setScopes] = useState<Set<McpTokenScope>>(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const readScopes = scopeChoices.filter((c) => c.group === "read");
+  const writeScopes = scopeChoices.filter((c) => c.group === "write");
+  const hasWriteScope = writeScopes.some((c) => scopes.has(c.name));
 
   function toggleScope(scope: McpTokenScope) {
     setScopes((prev) => {
@@ -239,6 +258,12 @@ function CreateTokenForm({ onCreated }: { onCreated: (t: McpTokenCreated) => voi
     if (scopes.size === 0) {
       setError("Select at least one permission.");
       return;
+    }
+    if (hasWriteScope) {
+      const ok = window.confirm(
+        "This token will have write access and can create or modify calendar events without further confirmation. Only grant this to clients you fully trust. Continue?",
+      );
+      if (!ok) return;
     }
     setSubmitting(true);
     try {
@@ -286,37 +311,89 @@ function CreateTokenForm({ onCreated }: { onCreated: (t: McpTokenCreated) => voi
           />
         </div>
 
-        <fieldset className="space-y-2">
-          <legend className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-            Permissions
-          </legend>
-          {MCP_TOKEN_SCOPES.map((scope) => (
-            <label
-              key={scope}
-              className="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 bg-zinc-50/60 px-4 py-3 hover:bg-zinc-100/60 dark:border-zinc-700 dark:bg-zinc-800/40 dark:hover:bg-zinc-800/60"
-            >
-              <input
-                type="checkbox"
-                className="mt-0.5 h-4 w-4 rounded accent-indigo-600"
-                checked={scopes.has(scope)}
-                onChange={() => toggleScope(scope)}
-              />
-              <span className="flex-1">
-                <span className="block font-mono text-xs text-zinc-700 dark:text-zinc-200">
-                  {scope}
+        {/* Read scopes */}
+        {readScopes.length > 0 && (
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+              Read access
+            </legend>
+            {readScopes.map((choice) => (
+              <label
+                key={choice.name}
+                className="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 bg-zinc-50/60 px-4 py-3 hover:bg-zinc-100/60 dark:border-zinc-700 dark:bg-zinc-800/40 dark:hover:bg-zinc-800/60"
+              >
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded accent-indigo-600"
+                  checked={scopes.has(choice.name)}
+                  onChange={() => toggleScope(choice.name)}
+                />
+                <span className="flex-1">
+                  <span className="block font-mono text-xs text-zinc-700 dark:text-zinc-200">
+                    {choice.name}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">
+                    {choice.label}
+                  </span>
                 </span>
-                <span className="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">
-                  {MCP_TOKEN_SCOPE_LABELS[scope]}
+              </label>
+            ))}
+          </fieldset>
+        )}
+
+        {/* Write scopes — amber card */}
+        {writeScopes.length > 0 && (
+          <fieldset className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-700/60 dark:bg-amber-950/20">
+            <div className="mb-2">
+              <legend className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                Write access — use with caution
+              </legend>
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                Tyto scopes umožní MCP klientovi zapisovat eventy do tvých a tvých týmových
+                kalendářů <strong>bez dalšího potvrzení</strong>. Udělej jen klientům, kterým plně
+                důvěřuješ.
+              </p>
+            </div>
+            {writeScopes.map((choice) => (
+              <label
+                key={choice.name}
+                className="flex cursor-pointer items-start gap-3 rounded-lg border border-amber-200 bg-white px-4 py-3 hover:bg-amber-50/60 dark:border-amber-800/50 dark:bg-zinc-800/40 dark:hover:bg-amber-950/30"
+              >
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded accent-amber-600"
+                  checked={scopes.has(choice.name)}
+                  onChange={() => toggleScope(choice.name)}
+                />
+                <span className="flex-1">
+                  <span className="block font-mono text-xs text-zinc-700 dark:text-zinc-200">
+                    {choice.name}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">
+                    {choice.label}
+                  </span>
                 </span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
+              </label>
+            ))}
+          </fieldset>
+        )}
 
         <FormError message={error} />
 
-        <Button type="submit" disabled={submitting} className="sm:w-auto sm:px-6">
-          {submitting ? "Creating…" : "Create token"}
+        <Button
+          type="submit"
+          disabled={submitting}
+          className={
+            hasWriteScope
+              ? "bg-amber-500 text-white hover:bg-amber-600 sm:w-auto sm:px-6 dark:bg-amber-600 dark:hover:bg-amber-700"
+              : "sm:w-auto sm:px-6"
+          }
+        >
+          {submitting
+            ? "Creating…"
+            : hasWriteScope
+              ? "Create token with write access"
+              : "Create token"}
         </Button>
       </form>
     </section>
@@ -372,6 +449,8 @@ function TokenTable({
   );
 }
 
+const WRITE_SCOPES_SET = new Set<string>(["create_booking", "write_event"]);
+
 function TokenRow({
   token,
   onRevoke,
@@ -389,10 +468,18 @@ function TokenRow({
     minute: "2-digit",
   });
   const lastUsed = token.last_used_at ? relativeTime(token.last_used_at) : "Never";
+  const hasWriteScope = token.scopes.some((s) => WRITE_SCOPES_SET.has(s));
 
   return (
     <tr className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
-      <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">{token.name}</td>
+      <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">
+        <span>{token.name}</span>
+        {hasWriteScope && (
+          <span className="ml-2 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+            Write
+          </span>
+        )}
+      </td>
       <td className="px-4 py-3 font-mono text-xs text-zinc-600 dark:text-zinc-300">
         {token.prefix}&hellip;
       </td>
@@ -401,7 +488,11 @@ function TokenRow({
           {token.scopes.map((s) => (
             <span
               key={s}
-              className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
+              className={
+                WRITE_SCOPES_SET.has(s)
+                  ? "rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                  : "rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
+              }
             >
               {s}
             </span>
