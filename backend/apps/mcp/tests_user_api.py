@@ -246,3 +246,63 @@ class ScopeChoicesTests(TestCase):
         write_names = {e["name"] for e in res.json()["scopes"] if e["group"] == "write"}
         self.assertIn("create_booking", write_names)
         self.assertIn("write_event", write_names)
+
+
+class CsrfEnforcementRegressionTests(TestCase):
+    """Prevent a future refactor from stripping 'CSRF' out of the 403 body —
+    the frontend's lib/mcp-tokens.ts::request() peek-and-retry recovery for
+    stale csrftoken cookies greps the body text for the substring 'CSRF'
+    to decide whether to run the clear-cookie + re-fetch-config + retry
+    dance. If DRF ever changes the detail format (e.g. a translation drops
+    the string), the client would silently stop recovering and the user
+    would hit the same login-loop → CSRF error our live incident hit on
+    2026-10-28.
+
+    Also pins the end-to-end expectation that:
+      - POST /api/mcp/tokens requires CSRF when SessionAuthentication is used
+      - Missing / wrong X-CSRFToken returns 403 (not 401, not 500)
+    """
+
+    def setUp(self):
+        from django.test import Client
+
+        self.alice = make_user(50)
+        # Enforce CSRF checks like production. Default Django Client disables
+        # CSRF enforcement; without this flag the real DRF behavior is masked.
+        self.client = Client(enforce_csrf_checks=True)
+        self.client.force_login(self.alice)
+
+    def test_post_with_missing_csrf_header_returns_403_with_detectable_body(self):
+        res = self.client.post(
+            "/api/mcp/tokens",
+            data='{"name": "x", "scopes": ["list_teams"]}',
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 403, res.content[:200])
+        # Frontend retry logic depends on this substring; see
+        # frontend/lib/mcp-tokens.ts::request() peek.includes("CSRF").
+        self.assertIn("CSRF", res.content.decode())
+
+    def test_post_with_wrong_csrf_header_returns_403_with_detectable_body(self):
+        # Seed a csrftoken cookie first — mirrors the browser having a cookie
+        # from an earlier (now-stale) session.
+        self.client.get("/_allauth/browser/v1/config")
+        res = self.client.post(
+            "/api/mcp/tokens",
+            data='{"name": "x", "scopes": ["list_teams"]}',
+            content_type="application/json",
+            HTTP_X_CSRFTOKEN="definitely-not-the-right-token",
+        )
+        self.assertEqual(res.status_code, 403, res.content[:200])
+        self.assertIn("CSRF", res.content.decode())
+
+    def test_post_with_matching_csrf_header_succeeds(self):
+        self.client.get("/_allauth/browser/v1/config")
+        csrf = self.client.cookies["csrftoken"].value
+        res = self.client.post(
+            "/api/mcp/tokens",
+            data='{"name": "ok", "scopes": ["list_teams"]}',
+            content_type="application/json",
+            HTTP_X_CSRFTOKEN=csrf,
+        )
+        self.assertEqual(res.status_code, 201, res.content[:200])

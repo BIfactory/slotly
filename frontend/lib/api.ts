@@ -46,17 +46,37 @@ async function ensureCsrf(): Promise<void> {
 }
 
 /**
+ * Delete the csrftoken cookie so the next GET /_allauth/browser/v1/config
+ * forces Django to emit a fresh one. Needed because Django's CsrfViewMiddleware
+ * only emits a new cookie (Set-Cookie: csrftoken=…) when the current cookie
+ * is missing or malformed — a stale-but-well-formed cookie is left alone
+ * even if it doesn't match the user's session CSRF secret. Simply re-fetching
+ * /_allauth/browser/v1/config therefore does NOT refresh anything.
+ */
+function clearCsrfCookie(): void {
+  if (typeof document === "undefined") return;
+  // Match the attributes Django's response set (path=/, domain omitted, secure).
+  // Setting the same name with expires in the past removes the browser's copy.
+  document.cookie = "csrftoken=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; samesite=Lax";
+  if (window.location.protocol === "https:") {
+    document.cookie = "csrftoken=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; samesite=Lax; secure";
+  }
+}
+
+/**
  * Force a fresh csrftoken cookie after a session-rotating event
  * (login / signup / confirmEmail). Django rotates the server-side CSRF
- * token on login, but the browser cookie isn't automatically refreshed —
- * so subsequent unsafe requests send a stale X-CSRFToken that doesn't
- * match the new session's token, and DRF returns
+ * secret on login, but the browser's masked csrftoken cookie survives
+ * — and the server leaves well-formed cookies alone — so later unsafe
+ * requests send a stale X-CSRFToken that doesn't match the new session's
+ * secret, and DRF returns
  *   "CSRF Failed: CSRF token from the 'X-Csrftoken' HTTP header incorrect."
- * Calling the /_allauth/browser/v1/config endpoint re-emits the cookie
- * with the current session's value.
+ * Deleting the cookie first makes the config endpoint emit a brand-new
+ * Set-Cookie that matches the current session.
  */
 export async function refreshCsrf(): Promise<void> {
   csrfSeeded = false;
+  clearCsrfCookie();
   try {
     await fetch("/_allauth/browser/v1/config", { credentials: "include" });
   } finally {
