@@ -28,12 +28,24 @@ from .models import APIToken
 
 
 class MCPTokenThrottle(BaseThrottle):
-    """Enforces 60 req/min AND 1 000 req/hour per APIToken."""
+    """Enforces per-token rate limits with two tiers:
+
+    Read tier (default): 60 req/min, 1 000 req/hour.
+    Write tier (write_external tools): 20 req/min, 100 req/hour.
+
+    Write-tier Redis keys use a ``-w`` suffix so they don't collide with
+    read-tier keys for the same token in the same window.
+    """
 
     # (window_label, max_requests, window_seconds)
     LIMITS = (
         ("1m", 60, 60),
         ("1h", 1000, 3600),
+    )
+    # Tighter limits for write_external tool calls.
+    WRITE_LIMITS = (
+        ("1m-w", 20, 60),
+        ("1h-w", 100, 3600),
     )
 
     def __init__(self):
@@ -45,10 +57,23 @@ class MCPTokenThrottle(BaseThrottle):
             # Not an MCP token — let auth handle the rejection.
             return True
 
+        # Determine tier from the incoming tool call. ToolsListView has no
+        # body; tools/call has `name` in body.
+        is_write = False
+        if request.method == "POST" and request.path.rstrip("/").endswith("/tools/call"):
+            tool_name = request.data.get("name") if isinstance(request.data, dict) else None
+            if isinstance(tool_name, str):
+                from .tools import get_tool
+                tool = get_tool(tool_name)
+                if tool is not None and tool.sensitivity == "write_external":
+                    is_write = True
+
+        limits = self.WRITE_LIMITS if is_write else self.LIMITS
+
         now = int(time.time())
         self._retry_after = 0
 
-        for label, limit, window in self.LIMITS:
+        for label, limit, window in limits:
             bucket = now // window
             key = f"mcp:rl:{token.pk}:{label}:{bucket}"
 

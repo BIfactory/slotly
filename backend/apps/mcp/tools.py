@@ -7,7 +7,16 @@ from django.db import models
 
 Handler = Callable[[Any, dict], dict]  # (user: User, params: dict) -> dict
 
-TOOL_SCOPES = ("list_teams", "list_members", "find_slots", "check_time")
+TOOL_SCOPES = ("list_teams", "list_members", "find_slots", "check_time", "create_booking")
+
+# Scope display definitions for Settings UI (T5). The ORDER is the UI order.
+TOKEN_SCOPE_UI = [
+    {"name": "list_teams", "label": "List teams", "group": "read"},
+    {"name": "list_members", "label": "List team members", "group": "read"},
+    {"name": "find_slots", "label": "Find free slots", "group": "read"},
+    {"name": "check_time", "label": "Check specific time", "group": "read"},
+    {"name": "create_booking", "label": "Create / update / cancel bookings", "group": "write"},
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,3 +479,176 @@ def check_time(user, params):
         "available": available,
         "members": members,
     }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Write-booking helpers and handlers (T3)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_dt(raw, field_name):
+    """Parse an ISO 8601 string with timezone into a datetime.
+
+    Raises ValidationError with the field name on any problem.
+    """
+    from django.utils.dateparse import parse_datetime
+    from rest_framework.exceptions import ValidationError
+
+    if not isinstance(raw, str) or not raw:
+        raise ValidationError({field_name: "required ISO 8601 string"})
+    parsed = parse_datetime(raw)
+    if parsed is None:
+        raise ValidationError({field_name: "invalid ISO 8601"})
+    if parsed.tzinfo is None:
+        raise ValidationError({field_name: "must include timezone offset"})
+    return parsed
+
+
+@register_tool(
+    "slotly.create_booking",
+    description="Vytvoří booking: zapíše event do hostova kalendáře a pozve attendees emailem.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "attendee_user_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 1,
+                "maxItems": 100,
+                "description": "User IDs ze slotly.list_members. Musí být členové sdíleného týmu s hostem.",
+            },
+            "start": {"type": "string", "format": "date-time"},
+            "end": {"type": "string", "format": "date-time"},
+            "title": {"type": "string", "maxLength": 200},
+            "notes": {"type": "string", "maxLength": 2000},
+            "meeting_type_id": {"type": "integer", "description": "Volitelně odkaz na MeetingType."},
+        },
+        "required": ["attendee_user_ids", "start", "end"],
+        "additionalProperties": False,
+    },
+    sensitivity="write_external",
+)
+def create_booking(user, params):
+    from rest_framework.exceptions import ValidationError
+
+    from apps.scheduling.services import create_booking as _svc_create_booking
+
+    # Parse input
+    attendee_user_ids = params.get("attendee_user_ids")
+    if not isinstance(attendee_user_ids, list) or not attendee_user_ids:
+        raise ValidationError({"attendee_user_ids": "required non-empty list of integers"})
+    if not all(isinstance(x, int) and not isinstance(x, bool) for x in attendee_user_ids):
+        raise ValidationError({"attendee_user_ids": "all elements must be integers"})
+    if len(attendee_user_ids) > 100:
+        raise ValidationError({"attendee_user_ids": "max 100 attendees"})
+
+    start = _parse_dt(params.get("start"), "start")
+    end = _parse_dt(params.get("end"), "end")
+
+    title = params.get("title", "")
+    if not isinstance(title, str):
+        raise ValidationError({"title": "must be a string"})
+    notes = params.get("notes", "")
+    if not isinstance(notes, str):
+        raise ValidationError({"notes": "must be a string"})
+
+    meeting_type_id = params.get("meeting_type_id")
+    if meeting_type_id is not None and (not isinstance(meeting_type_id, int) or isinstance(meeting_type_id, bool)):
+        raise ValidationError({"meeting_type_id": "must be an integer"})
+
+    # Delegate — service handles all business logic (visibility, conflict,
+    # provider write). The service raises ValidationError / PermissionDenied
+    # which ToolsCallView translates to 400 / 403.
+    return _svc_create_booking(
+        host_user=user,
+        start=start,
+        end=end,
+        attendee_user_ids=attendee_user_ids,
+        title=title,
+        notes=notes,
+        meeting_type_id=meeting_type_id,
+    )
+
+
+@register_tool(
+    "slotly.update_booking",
+    description="Změní čas / název existujícího bookingu + propsat do kalendáře.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "booking_uuid": {"type": "string", "format": "uuid"},
+            "start": {"type": "string", "format": "date-time"},
+            "end": {"type": "string", "format": "date-time"},
+            "title": {"type": "string", "maxLength": 200},
+        },
+        "required": ["booking_uuid"],
+        "additionalProperties": False,
+    },
+    sensitivity="write_external",
+)
+def update_booking(user, params):
+    from rest_framework.exceptions import ValidationError
+
+    from apps.scheduling.services import update_booking as _svc_update_booking
+
+    booking_uuid = params.get("booking_uuid")
+    if not isinstance(booking_uuid, str) or not booking_uuid:
+        raise ValidationError({"booking_uuid": "required UUID string"})
+
+    # Validate at least one of (start/end/title) was given.
+    has_time = "start" in params or "end" in params
+    has_title = "title" in params and params["title"] is not None
+    if not (has_time or has_title):
+        raise ValidationError({"detail": "nothing to update — provide start/end and/or title"})
+
+    start = _parse_dt(params["start"], "start") if "start" in params else None
+    end = _parse_dt(params["end"], "end") if "end" in params else None
+
+    # Both start and end must be given together or neither.
+    if (start is None) != (end is None):
+        raise ValidationError({"detail": "start and end must be provided together"})
+
+    title = params.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ValidationError({"title": "must be a string"})
+
+    return _svc_update_booking(
+        host_user=user,
+        booking_uuid=booking_uuid,
+        start=start,
+        end=end,
+        title=title,
+    )
+
+
+@register_tool(
+    "slotly.cancel_booking",
+    description="Zruší booking (idempotentní — druhý call vrátí current state).",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "booking_uuid": {"type": "string", "format": "uuid"},
+            "reason": {"type": "string", "maxLength": 500},
+        },
+        "required": ["booking_uuid"],
+        "additionalProperties": False,
+    },
+    sensitivity="write_external",
+)
+def cancel_booking(user, params):
+    from rest_framework.exceptions import ValidationError
+
+    from apps.scheduling.services import cancel_booking as _svc_cancel_booking
+
+    booking_uuid = params.get("booking_uuid")
+    if not isinstance(booking_uuid, str) or not booking_uuid:
+        raise ValidationError({"booking_uuid": "required UUID string"})
+    reason = params.get("reason", "")
+    if not isinstance(reason, str):
+        raise ValidationError({"reason": "must be a string"})
+
+    return _svc_cancel_booking(
+        host_user=user,
+        booking_uuid=booking_uuid,
+        reason=reason,
+    )
