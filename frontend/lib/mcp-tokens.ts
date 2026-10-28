@@ -4,13 +4,39 @@
  * /mcp/v1/* only.
  */
 
-export type McpTokenScope = "list_teams" | "list_members" | "find_slots" | "check_time";
+export type McpTokenScope =
+  | "list_teams"
+  | "list_members"
+  | "find_slots"
+  | "check_time"
+  | "create_booking"
+  | "write_event";
+
+export type McpTokenScopeGroup = "read" | "write";
+
+export type McpTokenScopeChoice = {
+  name: McpTokenScope;
+  label: string;
+  group: McpTokenScopeGroup;
+};
+
+/** Fallback list used when /api/mcp/scopes is unreachable. */
+export const MCP_SCOPE_CHOICES_FALLBACK: McpTokenScopeChoice[] = [
+  { name: "list_teams", label: "List teams", group: "read" },
+  { name: "list_members", label: "List team members", group: "read" },
+  { name: "find_slots", label: "Find free slots", group: "read" },
+  { name: "check_time", label: "Check specific time", group: "read" },
+  { name: "create_booking", label: "Create / update / cancel bookings", group: "write" },
+  { name: "write_event", label: "Write bare calendar events", group: "write" },
+];
 
 export const MCP_TOKEN_SCOPES: McpTokenScope[] = [
   "list_teams",
   "list_members",
   "find_slots",
   "check_time",
+  "create_booking",
+  "write_event",
 ];
 
 export const MCP_TOKEN_SCOPE_LABELS: Record<McpTokenScope, string> = {
@@ -18,6 +44,8 @@ export const MCP_TOKEN_SCOPE_LABELS: Record<McpTokenScope, string> = {
   list_members: "Read team member details",
   find_slots: "Find free slots across a team",
   check_time: "Check whether a time window is free",
+  create_booking: "Create / update / cancel bookings",
+  write_event: "Write bare calendar events",
 };
 
 export type McpToken = {
@@ -95,4 +123,10 @@ export function revokeMcpToken(id: number): Promise<void> {
 
 export function listMcpTokenCalls(id: number): Promise<McpTokenCall[]> {
   return request<McpTokenCall[]>(`/api/mcp/tokens/${id}/calls`);
+}
+
+export function listMcpTokenScopes(): Promise<McpTokenScopeChoice[]> {
+  return request<{ scopes: McpTokenScopeChoice[] }>("/api/mcp/scopes").then(
+    (d) => d.scopes,
+  );
 }

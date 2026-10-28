@@ -121,3 +121,18 @@ class TokenCallsView(APIView):
         calls = MCPCall.objects.filter(token=token).order_by("-created_at")[:50]
         data = MCPCallSerializer(calls, many=True).data
         return Response(data)
+
+
+class ScopeChoicesView(APIView):
+    """
+    GET /api/mcp/scopes — returns the list of available scopes with
+    display labels and group tags for the Settings UI token-create form.
+    Session-authed (same as other /api/mcp/tokens/* endpoints).
+    """
+
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.mcp.tools import TOKEN_SCOPE_UI
+        return Response({"scopes": list(TOKEN_SCOPE_UI)})
