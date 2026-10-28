@@ -207,15 +207,38 @@ class ToolsCallIdempotencyTests(APITestCase):
     # 11
     def test_read_tool_ignores_idempotency_key(self):
         """POST read tool with idempotency_key → handler called every time, no IdempotencyRecord."""
+        call_count = {"n": 0}
+
+        # Wrap the real list_teams handler with a counter so we can assert
+        # that it is dispatched on every call, not served from the cache.
+        original_tool = _REGISTRY["slotly.list_teams"]
+
+        def _counting_handler(user, params):
+            call_count["n"] += 1
+            return original_tool.handler(user, params)
+
+        counting_tool = ToolDefinition(
+            name=original_tool.name,
+            description=original_tool.description,
+            input_schema=original_tool.input_schema,
+            handler=_counting_handler,
+            sensitivity=original_tool.sensitivity,
+        )
+        patched_registry = dict(_REGISTRY)
+        patched_registry["slotly.list_teams"] = counting_tool
+
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.raw}")
-        # list_teams is read_only and in scope.
-        for _ in range(2):
-            resp = self.client.post(
-                "/mcp/v1/tools/call",
-                {"name": "slotly.list_teams", "params": {}, "idempotency_key": "read-key"},
-                format="json",
-            )
-            self.assertEqual(resp.status_code, 200)
+        with patch.dict("apps.mcp.tools._REGISTRY", patched_registry):
+            for _ in range(2):
+                resp = self.client.post(
+                    "/mcp/v1/tools/call",
+                    {"name": "slotly.list_teams", "params": {}, "idempotency_key": "read-key"},
+                    format="json",
+                )
+                self.assertEqual(resp.status_code, 200)
+
+        # Handler must have been dispatched on both calls — not cached.
+        self.assertEqual(call_count["n"], 2)
         self.assertEqual(IdempotencyRecord.objects.count(), 0)
 
     # 12

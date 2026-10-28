@@ -24,7 +24,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'ordering': ('-created_at',),
-                'indexes': [models.Index(fields=['token', 'key'], name='mcp_idempot_token_i_8f1465_idx'), models.Index(fields=['-created_at'], name='mcp_idempot_created_42b0ff_idx')],
+                'indexes': [models.Index(fields=['-created_at'], name='mcp_idempot_created_42b0ff_idx')],
                 'constraints': [models.UniqueConstraint(fields=('token', 'key'), name='unique_idempotency_per_token')],
             },
         ),
