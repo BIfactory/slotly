@@ -37,7 +37,7 @@ export type McpTokenCreated = McpToken & { token: string };
 export type McpTokenCall = {
   id: number;
   capability: string;
-  status: "ok" | "error" | "rate_limited";
+  status: "ok" | "error";
   duration_ms: number;
   error_code: string;
   created_at: string;

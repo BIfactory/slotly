@@ -331,35 +331,21 @@ curl -s https://example.slotly.app/mcp/v1/tools/call \
 
 ## 6. MCP client configuration
 
-### Claude CLI
+### Claude CLI / Desktop
 
-Use `claude mcp add` with the `--transport http` option and supply a Bearer header:
+MCP transports vary by client. Consult your client's documentation
+for how to add a remote HTTP server with a custom `Authorization`
+header. In general you will configure:
+
+- URL: `https://slotly.app/mcp/v1/tools/call` (or `/tools/list` where applicable)
+- Headers: `Authorization: Bearer <your token>`
+
+Example `curl` for `tools/list`:
 
 ```bash
-claude mcp add slotly \
-  --transport http \
-  https://example.slotly.app/mcp/v1 \
-  --header "Authorization: Bearer sltly_<your-token>"
+curl -H "Authorization: Bearer sltly_..." \
+     https://example.slotly.app/mcp/v1/tools/list
 ```
-
-### Claude Desktop (`claude_desktop_config.json`)
-
-```json
-{
-  "mcpServers": {
-    "slotly": {
-      "command": "npx",
-      "args": [
-        "@modelcontextprotocol/server-fetch",
-        "https://example.slotly.app/mcp/v1",
-        "--header", "Authorization: Bearer sltly_<your-token>"
-      ]
-    }
-  }
-}
-```
-
-> **Note:** Different MCP clients wire HTTP transport differently. The key requirement is that every request includes the `Authorization: Bearer <token>` header. Consult your client's documentation for the exact configuration syntax.
 
 ---
 
