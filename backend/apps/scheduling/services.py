@@ -116,14 +116,21 @@ def _pick_write_provider(user) -> _WriteProvider | None:
     )
     if default is None:
         # Auto-elect first available account (Google preferred) + persist.
+        # Use get_or_create to be race-safe: two concurrent callers (e.g. a
+        # booking view + a services call) would both see default=None and both
+        # try to create the row, hitting the OneToOneField unique constraint.
         g = GoogleAccount.objects.filter(user=user).first()
         if g is not None:
-            default = WriteCalendarDefault.objects.create(user=user, google_account=g)
+            default, _ = WriteCalendarDefault.objects.get_or_create(
+                user=user, defaults={"google_account": g}
+            )
         else:
             m = MicrosoftAccount.objects.filter(user=user).first()
             if m is None:
                 return None
-            default = WriteCalendarDefault.objects.create(user=user, microsoft_account=m)
+            default, _ = WriteCalendarDefault.objects.get_or_create(
+                user=user, defaults={"microsoft_account": m}
+            )
 
     if default.google_account_id is not None:
         g = default.google_account

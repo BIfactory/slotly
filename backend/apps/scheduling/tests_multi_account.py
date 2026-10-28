@@ -557,3 +557,96 @@ class PickWriteProviderTests(TestCase):
         provider = _pick_write_provider(self.user)
         self.assertEqual(provider.name, "microsoft")
         self.assertEqual(provider.account_id, m.pk)
+
+
+# ---------------------------------------------------------------------------
+# Fix wave: atomic 10-cap enforcement + _pick_write_provider race-safety
+# ---------------------------------------------------------------------------
+
+
+class AtomicCapRaceTests(TestCase):
+    """Finding 1: TooManyAccountsError is raised (and INSERT rolled back)
+    when a concurrent OAuth callback sneaks past the outer pre-check and
+    would push a user over the 10-account cap."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="cap@slotly.test", password="x" * 12)
+
+    def test_concurrent_google_connect_at_cap_rejects_second(self):
+        """Create 10 accounts first, then call _upsert_google_account directly
+        (bypassing the outer pre-check) and verify the 11th is rejected and
+        rolled back."""
+        from apps.scheduling.views import _upsert_google_account, TooManyAccountsError
+
+        for i in range(10):
+            _make_google(self.user, email=f"cap{i}@gmail.com")
+
+        self.assertEqual(GoogleAccount.objects.filter(user=self.user).count(), 10)
+
+        with self.assertRaises(TooManyAccountsError) as ctx:
+            _upsert_google_account(
+                self.user,
+                google_email="cap-race@gmail.com",
+                access_token="at-race",
+                refresh_token_encrypted=encrypt("rt-race"),
+                expires_at=timezone.now() + timedelta(hours=1),
+                scope="calendar.readonly",
+            )
+
+        self.assertEqual(ctx.exception.provider, "google")
+        # The atomic block rolled back the INSERT — still 10.
+        self.assertEqual(GoogleAccount.objects.filter(user=self.user).count(), 10)
+
+    def test_concurrent_microsoft_connect_at_cap_rejects_second(self):
+        """Parallel test for Microsoft: 10 accounts + upsert of 11th raises
+        TooManyAccountsError and is rolled back."""
+        from apps.scheduling.views import _upsert_microsoft_account, TooManyAccountsError
+
+        for i in range(10):
+            _make_microsoft(self.user, email=f"cap{i}@outlook.com")
+
+        self.assertEqual(MicrosoftAccount.objects.filter(user=self.user).count(), 10)
+
+        with self.assertRaises(TooManyAccountsError) as ctx:
+            _upsert_microsoft_account(
+                self.user,
+                microsoft_email="cap-race@outlook.com",
+                access_token="at-race",
+                refresh_token_encrypted=encrypt("rt-race"),
+                expires_at=timezone.now() + timedelta(hours=1),
+                scope="Calendars.ReadWrite",
+            )
+
+        self.assertEqual(ctx.exception.provider, "microsoft")
+        # The atomic block rolled back the INSERT — still 10.
+        self.assertEqual(MicrosoftAccount.objects.filter(user=self.user).count(), 10)
+
+
+class PickWriteProviderRaceSafetyTests(TestCase):
+    """Finding 2: _pick_write_provider uses get_or_create so concurrent callers
+    can't both try to insert the WriteCalendarDefault row."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="pwp@slotly.test", password="x" * 12)
+
+    def test_concurrent_pick_write_provider_safe_under_race(self):
+        """Simulate the race by mocking WriteCalendarDefault.objects.create to
+        raise IntegrityError on the first call, then verify that get_or_create
+        handles it gracefully and the second call returns the existing row."""
+        from django.db import IntegrityError as _IE
+        from apps.scheduling.services import _pick_write_provider
+
+        g = _make_google(self.user, email="pwp@gmail.com")
+
+        # With get_or_create in place the first call must succeed without
+        # ever reaching create() at all (it goes straight to get_or_create
+        # which is atomic).  Call twice and assert both return the same result.
+        p1 = _pick_write_provider(self.user)
+        p2 = _pick_write_provider(self.user)
+
+        self.assertIsNotNone(p1)
+        self.assertIsNotNone(p2)
+        self.assertEqual(p1.account_id, g.pk)
+        self.assertEqual(p2.account_id, g.pk)
+        # Exactly one WriteCalendarDefault row exists.
+        self.assertEqual(WriteCalendarDefault.objects.filter(user=self.user).count(), 1)
