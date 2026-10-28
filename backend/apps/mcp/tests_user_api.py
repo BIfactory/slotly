@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from .models import APIToken, MCPCall
 
@@ -162,7 +165,9 @@ class TokenCallsTests(TestCase):
         self.assertEqual(res.json(), [])
 
     def test_calls_endpoint_only_fifty(self):
-        # Create 60 calls
+        # Create 60 calls with explicit created_at (1 second apart) so ordering is deterministic.
+        # duration_ms == i, so the newest row (i=59) has the highest duration_ms.
+        now = timezone.now()
         MCPCall.objects.bulk_create([
             MCPCall(
                 token=self.alice_token,
@@ -170,15 +175,18 @@ class TokenCallsTests(TestCase):
                 status="ok",
                 duration_ms=i,
                 error_code="",
+                created_at=now + timedelta(seconds=i),
             )
             for i in range(60)
         ])
         res = self.client.get(f"/api/mcp/tokens/{self.alice_token.pk}/calls")
         self.assertEqual(res.status_code, 200)
         data = res.json()
+        # Cap: exactly 50 rows returned
         self.assertEqual(len(data), 50)
-        # Verify ordering: newest first — duration_ms for last bulk_create items is highest
-        # because auto_now_add=True assigned timestamps in insertion order
+        # Ordering: newest first — row with duration_ms=59 must be first, duration_ms=10 last
+        self.assertGreater(data[0]["duration_ms"], data[-1]["duration_ms"])
+        self.assertGreaterEqual(data[0]["created_at"], data[-1]["created_at"])
 
     def test_calls_endpoint_only_mine(self):
         bob_token, _ = APIToken.create_for_user(self.bob, "bob-calls", ["find_slots"])
