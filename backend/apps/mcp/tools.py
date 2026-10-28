@@ -296,6 +296,28 @@ def find_slots(user, params):
     }
 
 
+def _merge_intervals(intervals: list[tuple]) -> list[tuple]:
+    """Merge overlapping (start, end) intervals into a minimal set.
+
+    Input need not be sorted; output is sorted by start.
+
+    NOTE: this is a local copy of apps/search/views._merge_intervals.
+    If the logic ever changes, update both; future consolidation should
+    move the function to apps/search/utils.py and import from there.
+    """
+    if not intervals:
+        return []
+    items = sorted(intervals, key=lambda x: x[0])
+    out = [items[0]]
+    for s, e in items[1:]:
+        last_s, last_e = out[-1]
+        if s <= last_e:
+            out[-1] = (last_s, max(last_e, e))
+        else:
+            out.append((s, e))
+    return out
+
+
 @register_tool(
     "slotly.check_time",
     description="Ověř zda jsou vybraní členové týmu volní v daném okně.",
@@ -312,4 +334,136 @@ def find_slots(user, params):
     },
 )
 def check_time(user, params):
-    return {"everyone_free": True, "people": []}  # dummy — T6 replaces
+    from datetime import timedelta
+
+    from django.db.models import Q
+    from django.utils.dateparse import parse_datetime
+    from rest_framework.exceptions import PermissionDenied, ValidationError
+
+    from apps.availability.models import Unavailability
+    from apps.calendars.models import CalendarEvent
+    from apps.teams.models import Membership, Team
+
+    # 1. Validate team_id
+    team_id = params.get("team_id")
+    if not isinstance(team_id, int):
+        raise ValidationError({"team_id": "must be an integer"})
+
+    try:
+        team = Team.objects.get(pk=team_id)
+    except Team.DoesNotExist:
+        raise ValidationError({"team_id": "team not found"})
+
+    # 2. Caller must be a team member
+    if not Membership.objects.filter(team=team, user=user).exists():
+        raise PermissionDenied({"team_id": "you are not a member of this team"})
+
+    # 3. Validate member_ids
+    raw_member_ids = params.get("member_ids")
+    if raw_member_ids is None:
+        raise ValidationError({"member_ids": "this field is required"})
+    if not isinstance(raw_member_ids, list) or len(raw_member_ids) == 0:
+        raise ValidationError({"member_ids": "must be a non-empty list"})
+    if not all(isinstance(x, int) for x in raw_member_ids):
+        raise ValidationError({"member_ids": "all values must be integers"})
+    if len(raw_member_ids) != len(set(raw_member_ids)):
+        raise ValidationError({"member_ids": "must be unique"})
+
+    valid_ids = set(
+        Membership.objects.filter(team=team, user_id__in=raw_member_ids)
+        .values_list("user_id", flat=True)
+    )
+    bad = set(raw_member_ids) - valid_ids
+    if bad:
+        raise ValidationError({"member_ids": f"not team members: {sorted(bad)}"})
+
+    member_ids = list(valid_ids)
+
+    # 4. Parse and validate start/end
+    raw_start = params.get("start")
+    raw_end = params.get("end")
+
+    if raw_start is None:
+        raise ValidationError({"start": "this field is required"})
+    if raw_end is None:
+        raise ValidationError({"end": "this field is required"})
+
+    start = parse_datetime(raw_start)
+    if start is None:
+        raise ValidationError({"start": "invalid ISO 8601 timestamp"})
+    if start.tzinfo is None:
+        raise ValidationError({"start": "must include timezone offset"})
+
+    end = parse_datetime(raw_end)
+    if end is None:
+        raise ValidationError({"end": "invalid ISO 8601 timestamp"})
+    if end.tzinfo is None:
+        raise ValidationError({"end": "must include timezone offset"})
+
+    if end <= start:
+        raise ValidationError({"end": "must be after start"})
+    if (end - start) > timedelta(hours=24):
+        raise ValidationError({"end": "single check window cannot exceed 24 hours"})
+
+    # 5. Collect busy intervals per member (mirrors CheckTimeView.post)
+    events = CalendarEvent.objects.filter(
+        Q(transp=CalendarEvent.Transparency.OPAQUE) | Q(is_all_day=True),
+        calendar__owner_id__in=member_ids,
+        calendar__include_in_busy=True,
+        dtstart__lt=end,
+        dtend__gt=start,
+    ).exclude(
+        status=CalendarEvent.Status.CANCELLED,
+    ).values("calendar__owner_id", "dtstart", "dtend")
+
+    conflicts_per_user: dict[int, list[tuple]] = {uid: [] for uid in member_ids}
+    for ev in events:
+        conflicts_per_user[ev["calendar__owner_id"]].append(
+            (max(ev["dtstart"], start), min(ev["dtend"], end)),
+        )
+
+    for u in Unavailability.objects.filter(
+        user_id__in=member_ids,
+        starts_at__lt=end,
+        ends_at__gt=start,
+    ).values("user_id", "starts_at", "ends_at"):
+        conflicts_per_user[u["user_id"]].append(
+            (max(u["starts_at"], start), min(u["ends_at"], end)),
+        )
+
+    # 6. Build response — ordered, privacy-locked (no titles, no labels)
+    from apps.accounts.models import User as _User
+
+    users = _User.objects.filter(pk__in=member_ids).order_by(
+        "first_name", "last_name", "email",
+    )
+
+    def _display_name(u):
+        full = f"{u.first_name} {u.last_name}".strip()
+        return full or u.email
+
+    members = []
+    available = True
+    for u in users:
+        raw = conflicts_per_user.get(u.pk, [])
+        merged = _merge_intervals(raw)
+        status_str = "busy" if merged else "free"
+        if merged:
+            available = False
+        members.append({
+            "user_id": u.pk,
+            "display_name": _display_name(u),
+            "email": u.email,
+            "status": status_str,
+            "conflicts": [
+                {"start": s.isoformat(), "end": e.isoformat()} for s, e in merged
+            ],
+        })
+
+    return {
+        "team_id": team.pk,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "available": available,
+        "members": members,
+    }
