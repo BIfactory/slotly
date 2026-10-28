@@ -3,6 +3,9 @@ from django.urls import path
 from .views import (
     BookingRequestDecideView,
     BookingRequestListView,
+    CalendarAccountDetailView,
+    CalendarAccountSetDefaultView,
+    CalendarAccountsListView,
     GoogleAccountStatusView,
     HostBookingCancelView,
     HostBookingListView,
@@ -38,6 +41,22 @@ urlpatterns = [
         "microsoft-account/writable-calendars",
         MicrosoftWritableCalendarsView.as_view(),
         name="microsoft-account-writable-calendars",
+    ),
+    # Multi-account REST endpoints (Task 3)
+    path(
+        "calendar-accounts",
+        CalendarAccountsListView.as_view(),
+        name="calendar-accounts-list",
+    ),
+    path(
+        "calendar-accounts/<str:composite_id>",
+        CalendarAccountDetailView.as_view(),
+        name="calendar-accounts-detail",
+    ),
+    path(
+        "calendar-accounts/<str:composite_id>/set-default",
+        CalendarAccountSetDefaultView.as_view(),
+        name="calendar-accounts-set-default",
     ),
     path("meeting-types", MeetingTypeListView.as_view(), name="meeting-types-list"),
     path(

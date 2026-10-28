@@ -326,6 +326,17 @@ def oauth_callback(request: HttpRequest) -> HttpResponseRedirect:
     expires_in = int(token_payload.get("expires_in", 3600))
     expires_at = djtz.now() + timedelta(seconds=expires_in)
 
+    # 10-account cap: block the 11th distinct Google account.
+    # Update of an existing account (same email) is always allowed.
+    existing_emails = set(
+        GoogleAccount.objects.filter(user=user).values_list("google_email", flat=True)
+    )
+    if (
+        google_email not in existing_emails
+        and len(existing_emails) >= 10
+    ):
+        return _frontend_return("error", reason="too_many_accounts")
+
     _upsert_google_account(
         user,
         google_email=google_email,
@@ -564,6 +575,17 @@ def microsoft_oauth_callback(request: HttpRequest) -> HttpResponseRedirect:
     expires_in = int(token_payload.get("expires_in", 3600))
     expires_at = djtz.now() + timedelta(seconds=expires_in)
 
+    # 10-account cap: block the 11th distinct Microsoft account.
+    # Update of an existing account (same email) is always allowed.
+    existing_ms_emails = set(
+        MicrosoftAccount.objects.filter(user=user).values_list("microsoft_email", flat=True)
+    )
+    if (
+        ms_email not in existing_ms_emails
+        and len(existing_ms_emails) >= 10
+    ):
+        return _frontend_return("error", provider="microsoft", reason="too_many_accounts")
+
     _upsert_microsoft_account(
         user,
         microsoft_email=ms_email,
@@ -651,6 +673,180 @@ class MicrosoftWritableCalendarsView(APIView):
         except _graph.MicrosoftApiError as exc:
             return Response({"detail": f"Microsoft refused: {exc}"}, status=502)
         return Response({"calendars": items})
+
+
+# ---------------------------------------------------------------------------
+# Multi-account: /api/calendar-accounts  (Task 3)
+# ---------------------------------------------------------------------------
+
+
+class CalendarAccountsListView(APIView):
+    """
+    GET /api/calendar-accounts
+    Returns all connected OAuth accounts (Google + Microsoft) for the
+    authenticated user.  Each item uses a composite id ("g:<pk>" or
+    "m:<pk>") so downstream endpoints can unambiguously target a single
+    account across providers.
+
+    Response shape:
+      {
+        "accounts": [
+          {
+            "id": "g:3",
+            "provider": "google",
+            "email": "alice@gmail.com",
+            "write_calendar_id": "primary",
+            "is_default": true,
+            "created_at": "2026-01-15T10:00:00Z"
+          },
+          ...
+        ]
+      }
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        from .serializers import CalendarAccountSerializer, build_account_list
+
+        accounts = build_account_list(request.user)
+        serializer = CalendarAccountSerializer(accounts, many=True)
+        return Response({"accounts": serializer.data})
+
+
+class CalendarAccountDetailView(APIView):
+    """
+    PATCH /api/calendar-accounts/<composite_id>
+      body: {"write_calendar_id": "<calendar_id>"}
+      Sets the per-account write calendar.
+
+    DELETE /api/calendar-accounts/<composite_id>
+      Disconnects a single account.  If it was the default:
+        - Promote the next Google account (if any).
+        - Otherwise promote the next Microsoft account.
+        - If no accounts remain, delete the WriteCalendarDefault row.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _resolve(self, request, composite_id: str):
+        from .serializers import resolve_composite_id
+
+        try:
+            return resolve_composite_id(request.user, composite_id)
+        except ValueError as exc:
+            if str(exc) == "not_found":
+                return None, None
+            return None, None
+
+    def patch(self, request: Request, composite_id: str) -> Response:
+        account, provider = self._resolve(request, composite_id)
+        if account is None:
+            return Response({"detail": "Account not found."}, status=404)
+
+        raw = request.data.get("write_calendar_id")
+        if not isinstance(raw, str):
+            return Response({"write_calendar_id": "Required string."}, status=400)
+
+        if provider == "google":
+            if not raw.strip():
+                return Response(
+                    {"write_calendar_id": "Required non-empty string for Google."},
+                    status=400,
+                )
+            account.write_calendar_id = raw.strip()
+        else:
+            # Microsoft: empty string means "primary calendar" — valid.
+            account.write_calendar_id = raw
+
+        account.save(update_fields=["write_calendar_id", "updated_at"])
+        return Response({
+            "id": composite_id,
+            "write_calendar_id": account.write_calendar_id,
+        })
+
+    def delete(self, request: Request, composite_id: str) -> Response:
+        from .models import WriteCalendarDefault
+
+        account, provider = self._resolve(request, composite_id)
+        if account is None:
+            return Response({"detail": "Account not found."}, status=404)
+
+        # Capture default state BEFORE deletion.  When this account is the
+        # FK target of WriteCalendarDefault, Django's CASCADE will delete
+        # that row too — so we can't update it after the fact.
+        default = WriteCalendarDefault.objects.filter(user=request.user).first()
+        is_default = False
+        if default is not None:
+            if provider == "google" and default.google_account_id == account.pk:
+                is_default = True
+            elif provider == "microsoft" and default.microsoft_account_id == account.pk:
+                is_default = True
+
+        # Delete the account row (may cascade-delete WriteCalendarDefault).
+        account.delete()
+
+        if is_default:
+            # Try to promote: next Google first, then Microsoft.
+            next_g = GoogleAccount.objects.filter(user=request.user).first()
+            if next_g is not None:
+                # Re-fetch default (may still exist if it pointed at a different
+                # provider, or create fresh if cascade-deleted it).
+                WriteCalendarDefault.objects.update_or_create(
+                    user=request.user,
+                    defaults={"google_account": next_g, "microsoft_account": None},
+                )
+            else:
+                next_m = MicrosoftAccount.objects.filter(user=request.user).first()
+                if next_m is not None:
+                    WriteCalendarDefault.objects.update_or_create(
+                        user=request.user,
+                        defaults={"microsoft_account": next_m, "google_account": None},
+                    )
+                # else: no accounts remain — WriteCalendarDefault already gone (cascade)
+                # or we let it be absent.
+
+        return Response(status=204)
+
+
+class CalendarAccountSetDefaultView(APIView):
+    """
+    POST /api/calendar-accounts/<composite_id>/set-default
+    Switches the WriteCalendarDefault to point at the identified account.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request, composite_id: str) -> Response:
+        from .models import WriteCalendarDefault
+        from .serializers import resolve_composite_id
+
+        try:
+            account, provider = resolve_composite_id(request.user, composite_id)
+        except ValueError:
+            return Response({"detail": "Account not found."}, status=404)
+
+        # Upsert WriteCalendarDefault for this user.
+        default = WriteCalendarDefault.objects.filter(user=request.user).first()
+        if default is None:
+            if provider == "google":
+                WriteCalendarDefault.objects.create(
+                    user=request.user, google_account=account
+                )
+            else:
+                WriteCalendarDefault.objects.create(
+                    user=request.user, microsoft_account=account
+                )
+        else:
+            if provider == "google":
+                default.google_account = account
+                default.microsoft_account = None
+            else:
+                default.microsoft_account = account
+                default.google_account = None
+            default.save(update_fields=["google_account", "microsoft_account"])
+
+        return Response({"status": "ok", "default": composite_id})
 
 
 # ---------------------------------------------------------------------------
@@ -1990,24 +2186,41 @@ class _WriteProvider:
 
 
 def _pick_write_provider(user) -> _WriteProvider | None:
-    """Choose which OAuth-connected provider should host the new event."""
-    g = GoogleAccount.objects.filter(user=user).only("write_calendar_id").first()
-    if g is not None:
+    """Choose which OAuth-connected provider should host the new event.
+
+    Reads WriteCalendarDefault; auto-elects if missing but accounts exist.
+    """
+    default = (
+        WriteCalendarDefault.objects
+        .filter(user=user)
+        .select_related("google_account", "microsoft_account")
+        .first()
+    )
+    if default is None:
+        g = GoogleAccount.objects.filter(user=user).first()
+        if g is not None:
+            default = WriteCalendarDefault.objects.create(user=user, google_account=g)
+        else:
+            m = MicrosoftAccount.objects.filter(user=user).first()
+            if m is None:
+                return None
+            default = WriteCalendarDefault.objects.create(user=user, microsoft_account=m)
+
+    if default.google_account_id is not None:
+        g = default.google_account
         return _WriteProvider(
             name="google",
             write_calendar_id=g.write_calendar_id or "primary",
             create_event=create_calendar_event,
             delete_event=delete_calendar_event,
         )
-    m = MicrosoftAccount.objects.filter(user=user).only("write_calendar_id").first()
-    if m is not None:
-        return _WriteProvider(
-            name="microsoft",
-            write_calendar_id=m.write_calendar_id,
-            create_event=_graph.create_calendar_event,
-            delete_event=_graph.delete_calendar_event,
-        )
-    return None
+    m = default.microsoft_account
+    return _WriteProvider(
+        name="microsoft",
+        write_calendar_id=m.write_calendar_id,
+        create_event=_graph.create_calendar_event,
+        delete_event=_graph.delete_calendar_event,
+    )
 
 
 def _provider_for(name: str) -> Any:
