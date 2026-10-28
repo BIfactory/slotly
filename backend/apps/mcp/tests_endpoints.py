@@ -27,27 +27,36 @@ class ToolsListViewTests(APITestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"error": "invalid_token"})
 
-    def test_tools_list_returns_four_tools(self):
-        """GET with valid token → 200, four tools with required keys."""
+    def test_tools_list_returns_eight_tools(self):
+        """GET with valid token → 200, eight tools with required keys."""
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.raw}")
         response = self.client.get("/mcp/v1/tools/list")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         tools = data["tools"]
-        self.assertEqual(len(tools), 4)
+        self.assertEqual(len(tools), 8)
         for tool in tools:
             self.assertIn("name", tool)
             self.assertIn("description", tool)
             self.assertIn("inputSchema", tool)
 
     def test_tools_list_names(self):
-        """GET with valid token → four exact tool names."""
+        """GET with valid token → eight exact tool names."""
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.raw}")
         response = self.client.get("/mcp/v1/tools/list")
         self.assertEqual(response.status_code, 200)
         data = response.json()
         names = {t["name"] for t in data["tools"]}
-        self.assertEqual(names, {"slotly.list_teams", "slotly.list_members", "slotly.find_slots", "slotly.check_time"})
+        self.assertEqual(names, {
+            "slotly.list_teams",
+            "slotly.list_members",
+            "slotly.find_slots",
+            "slotly.check_time",
+            "slotly.create_booking",
+            "slotly.update_booking",
+            "slotly.cancel_booking",
+            "slotly.create_event",
+        })
 
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})

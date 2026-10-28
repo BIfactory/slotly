@@ -114,9 +114,8 @@ cd backend
 
 ## MCP API
 
-Slotly exposes a [Model Context Protocol](https://spec.modelcontextprotocol.io/specification/2024-11-05/) endpoint so AI assistants can query scheduling data on behalf of authenticated users.
-
-See [`docs/mcp-api.md`](./docs/mcp-api.md) for the full reference: authentication, rate limits, error shapes, tool catalog with curl examples, and client configuration.
+MCP API — read + write capabilities (bookings, calendar events) via a
+stable HTTP endpoint. See [`docs/mcp-api.md`](./docs/mcp-api.md).
 
 ## Status
 

@@ -213,3 +213,36 @@ class TokenUnauthenticatedTests(TestCase):
         self.assertIn(res_post.status_code, (401, 403))
         res_delete = self.client.delete(f"/api/mcp/tokens/{self.token.pk}")
         self.assertIn(res_delete.status_code, (401, 403))
+
+
+class ScopeChoicesTests(TestCase):
+    def setUp(self):
+        self.user = make_user(40)
+        self.client.force_login(self.user)
+
+    def test_scopes_endpoint_returns_six_entries(self):
+        res = self.client.get("/api/mcp/scopes")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("scopes", data)
+        self.assertEqual(len(data["scopes"]), 6)
+
+    def test_scopes_endpoint_shape(self):
+        res = self.client.get("/api/mcp/scopes")
+        self.assertEqual(res.status_code, 200)
+        for entry in res.json()["scopes"]:
+            self.assertIn("name", entry)
+            self.assertIn("label", entry)
+            self.assertIn("group", entry)
+
+    def test_scopes_endpoint_requires_auth(self):
+        self.client.logout()
+        res = self.client.get("/api/mcp/scopes")
+        self.assertIn(res.status_code, (401, 403))
+
+    def test_scopes_endpoint_write_group_contains_create_booking_write_event(self):
+        res = self.client.get("/api/mcp/scopes")
+        self.assertEqual(res.status_code, 200)
+        write_names = {e["name"] for e in res.json()["scopes"] if e["group"] == "write"}
+        self.assertIn("create_booking", write_names)
+        self.assertIn("write_event", write_names)

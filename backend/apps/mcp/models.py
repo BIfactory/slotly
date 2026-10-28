@@ -67,3 +67,36 @@ class MCPCall(models.Model):
 
     def __str__(self) -> str:
         return f"MCPCall({self.capability}, {self.status})"
+
+
+class IdempotencyRecord(models.Model):
+    """Caches a successful write-capability result for 24h so a retried
+    MCP call with the same idempotency_key returns the stored response
+    without re-executing the side effect.
+
+    Keyed by (token, key) so one client's keys can't collide with another's.
+    Only successful calls (HTTP 2xx) are stored — failed calls do not
+    occupy a key.
+    """
+
+    token = models.ForeignKey("APIToken", on_delete=models.CASCADE, related_name="idempotency_records")
+    key = models.CharField(max_length=128)
+    capability = models.CharField(max_length=100)
+    # Full MCP response body as served to the client (the `result` payload).
+    # JSON because that's what we return anyway.
+    response_json = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    # Optional convenience fields for admin / audit — not part of the key.
+    booking_uuid = models.UUIDField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("token", "key"), name="unique_idempotency_per_token"),
+        ]
+        indexes = [
+            models.Index(fields=["-created_at"]),
+        ]
+        ordering = ("-created_at",)
+
+    def __str__(self) -> str:
+        return f"IdempotencyRecord({self.token}, {self.key[:16]}…)"

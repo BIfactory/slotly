@@ -196,6 +196,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "availability.purge_old_blocks",
         "schedule": 86400.0,  # 24h
     },
+    "mcp-purge-idempotency": {
+        "task": "mcp.purge_old_idempotency",
+        "schedule": 3600.0,  # hourly
+    },
 }
 
 CACHES = {
