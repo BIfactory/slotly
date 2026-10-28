@@ -16,22 +16,22 @@ from apps.scheduling.models import GoogleAccount, MicrosoftAccount, WriteCalenda
 from apps.scheduling.security import decrypt, encrypt
 
 
-def _make_google(user, email="x@gmail.com"):
+def _make_google(user, email="x@gmail.com", access_token="AT", refresh_token="RT"):
     return GoogleAccount.objects.create(
         user=user,
         google_email=email,
-        access_token_encrypted=encrypt("AT"),
-        refresh_token_encrypted=encrypt("RT"),
+        access_token_encrypted=encrypt(access_token),
+        refresh_token_encrypted=encrypt(refresh_token),
         expires_at=timezone.now() + timedelta(hours=1),
     )
 
 
-def _make_microsoft(user, email="x@outlook.com"):
+def _make_microsoft(user, email="x@outlook.com", access_token="AT", refresh_token="RT"):
     return MicrosoftAccount.objects.create(
         user=user,
         microsoft_email=email,
-        access_token_encrypted=encrypt("AT"),
-        refresh_token_encrypted=encrypt("RT"),
+        access_token_encrypted=encrypt(access_token),
+        refresh_token_encrypted=encrypt(refresh_token),
         expires_at=timezone.now() + timedelta(hours=1),
     )
 
@@ -216,17 +216,32 @@ class OAuthCallbackMultiAccountTests(TestCase):
     def test_get_credentials_with_account_id_returns_correct_account(self):
         from apps.scheduling.google_client import GoogleOAuthError, get_credentials
 
-        g1 = _make_google(self.user, email="alice@gmail.com")
-        g2 = _make_google(self.user, email="alice.work@gmail.com")
+        g1 = _make_google(self.user, email="alice@gmail.com", access_token="AT-g1")
+        g2 = _make_google(self.user, email="alice.work@gmail.com", access_token="AT-g2")
 
         creds1 = get_credentials(self.user, g1.pk)
         creds2 = get_credentials(self.user, g2.pk)
 
-        # Both should resolve without error and return different tokens if
-        # they were created with different access tokens; here we just check
-        # that neither raises.
-        self.assertIsNotNone(creds1.access_token)
-        self.assertIsNotNone(creds2.access_token)
+        # Verify that each call returns the correct account's token: g1 must
+        # return "AT-g1" and g2 must return "AT-g2". This proves the account_id
+        # lookup is functioning correctly, not falling back to any account.
+        self.assertEqual(creds1.access_token, "AT-g1")
+        self.assertEqual(creds2.access_token, "AT-g2")
+
+    def test_get_credentials_with_account_id_returns_correct_microsoft_account(self):
+        from apps.scheduling.graph_client import MicrosoftOAuthError, get_credentials
+
+        m1 = _make_microsoft(self.user, email="alice@outlook.com", access_token="AT-m1")
+        m2 = _make_microsoft(self.user, email="alice.work@outlook.com", access_token="AT-m2")
+
+        creds1 = get_credentials(self.user, m1.pk)
+        creds2 = get_credentials(self.user, m2.pk)
+
+        # Verify that each call returns the correct account's token: m1 must
+        # return "AT-m1" and m2 must return "AT-m2". This proves the account_id
+        # lookup is functioning correctly for Microsoft as well.
+        self.assertEqual(creds1.access_token, "AT-m1")
+        self.assertEqual(creds2.access_token, "AT-m2")
 
     def test_get_credentials_none_fallback_uses_write_default(self):
         from apps.scheduling.google_client import get_credentials
