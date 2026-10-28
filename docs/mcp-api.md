@@ -9,14 +9,18 @@ Slotly exposes a [Model Context Protocol](https://spec.modelcontextprotocol.io/s
 
 ## 1. Overview
 
-The MCP endpoint lets any MCP-compatible client (e.g. Claude Desktop, Claude CLI, custom LLM agents) call four tools:
+The MCP endpoint lets any MCP-compatible client (e.g. Claude Desktop, Claude CLI, custom LLM agents) call 8 tools:
 
-| Tool | Short description |
-|---|---|
-| `slotly.list_teams` | List teams the authenticated user belongs to |
-| `slotly.list_members` | List members of a given team |
-| `slotly.find_slots` | Find free meeting slots across a team |
-| `slotly.check_time` | Check whether a set of members is free in a time window |
+| Tool | Sensitivity | Short description |
+|---|---|---|
+| `slotly.list_teams` | `read` | List teams the authenticated user belongs to |
+| `slotly.list_members` | `read` | List members of a given team |
+| `slotly.find_slots` | `read` | Find free meeting slots across a team |
+| `slotly.check_time` | `read` | Check whether a set of members is free in a time window |
+| `slotly.create_booking` | `write_external` | Create a booking and write an event to the host calendar |
+| `slotly.update_booking` | `write_external` | Reschedule or rename an existing booking |
+| `slotly.cancel_booking` | `write_external` | Cancel a booking and delete the provider event |
+| `slotly.create_event` | `write_external` | Write a bare calendar event (no Booking row) |
 
 Access is controlled by **Personal Access Tokens (PATs)** created at `/settings/api-tokens`. Each token carries a fixed set of scopes that limit which tools it can call.
 
@@ -357,5 +361,316 @@ curl -H "Authorization: Bearer sltly_..." \
 | `list_members` | `slotly.list_members` |
 | `find_slots` | `slotly.find_slots` |
 | `check_time` | `slotly.check_time` |
+| `create_booking` | `slotly.create_booking`, `slotly.update_booking`, `slotly.cancel_booking` |
+| `write_event` | `slotly.create_event` |
 
-Tokens can be scoped narrowly — e.g. a token with only `find_slots` can call `slotly.find_slots` but will receive `403 scope_denied` for any other tool.
+Tokens can be scoped narrowly — e.g. a token with only `find_slots` can call `slotly.find_slots` but will receive `403 scope_denied` for any other tool. Write scopes (`create_booking`, `write_event`) are configured separately in **Settings → API tokens** and are marked with an amber warning.
+
+---
+
+## 8. Write capabilities
+
+Write tools create, update, or cancel calendar entries and bookings on
+behalf of the authenticated Slotly user. Every write tool is marked
+`write_external` in `tools/list`, and the gateway returns `429` under a
+tighter rate limit (20/min, 100/hour per token). Agents SHOULD prompt
+the user for confirmation before dispatching a write tool.
+
+### Scopes
+
+Write capabilities require one of two write scopes in addition to any
+read scopes:
+
+| Scope | Capabilities covered |
+|---|---|
+| `create_booking` | `slotly.create_booking`, `slotly.update_booking`, `slotly.cancel_booking` |
+| `write_event` | `slotly.create_event` |
+
+Create write-enabled tokens in **Settings → API tokens**. The write section
+is marked with an amber warning; read tokens are unaffected.
+
+### Idempotency
+
+Write tools support an optional top-level `idempotency_key` field on the
+`/mcp/v1/tools/call` body:
+
+```json
+{
+  "name": "slotly.create_booking",
+  "params": {"attendee_user_ids": [42], "start": "...", "end": "..."},
+  "idempotency_key": "<any string, 1-128 chars>"
+}
+```
+
+If the same `(token, idempotency_key)` is seen again within 24 hours and
+the previous call succeeded, the cached response is returned immediately
+and no side effect fires. Failed calls do not occupy a key — retrying
+with the same key after a failure re-executes the request.
+
+Idempotency keys are scoped per token: two different tokens can use the
+same raw key without conflict. Read tools silently ignore
+`idempotency_key`.
+
+### Rate limits (write tier)
+
+Writes are capped tighter than reads:
+
+| Window | Reads | Writes |
+|---|---|---|
+| per minute | 60 | 20 |
+| per hour | 1000 | 100 |
+
+On throttle, you get `HTTP 429 {"error": "rate_limited", "retry_after": N}` —
+same shape as reads.
+
+### Error codes added by F15
+
+In addition to the F14 error codes:
+
+| HTTP | `error` | `detail.code` | Meaning |
+|---|---|---|---|
+| 400 | `validation_error` | `slot_conflict` | Someone's calendar now has an overlapping event; refresh and retry with a different time. |
+| 400 | `validation_error` | `already_ended` | Cancelling / updating a booking whose end time is in the past. |
+| 400 | `validation_error` | `meeting_type_inactive` | The referenced `MeetingType` was deleted (soft-removed, `is_active=False`). |
+| 503 | `upstream_oauth_failed` | — | The host's Google / Microsoft OAuth grant is broken; agent should prompt the user to reconnect in **Settings → Calendars**. |
+
+Audit log also records `error_code="idempotency_hit"` for cache-returning
+calls (`status="ok"`); these count toward the rate limit normally.
+
+---
+
+### 8.1 `slotly.create_booking`
+
+Creates a meeting between the authenticated host and one or more Slotly
+users. Writes an event to the host's connected calendar; attendees are
+added as RFC 5545 ATTENDEE entries and receive the standard provider
+invite (Google / Outlook email).
+
+**Params:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `attendee_user_ids` | `int[]` | yes | 1-100 user ids from `slotly.list_members`. |
+| `start` | ISO 8601 string | yes | Must include timezone offset. |
+| `end` | ISO 8601 string | yes | 5 min ≤ end-start ≤ 12 h. |
+| `title` | string | no | Max 200 chars. Defaults to the attendee name. |
+| `notes` | string | no | Max 2000 chars. |
+| `meeting_type_id` | int | no | Reference to a `MeetingType` the host owns. |
+
+**Returns:**
+
+```json
+{
+  "result": {
+    "booking_uuid": "a1b2c3d4-...",
+    "status": "ok",
+    "event": {
+      "id": "google_event_id",
+      "html_link": "https://calendar.google.com/...",
+      "meet_link": "https://meet.google.com/...",
+      "start": "2026-11-04T10:00:00+01:00",
+      "end": "2026-11-04T10:30:00+01:00",
+      "provider": "google"
+    },
+    "invited_emails": ["a@x", "b@y"],
+    "manage_url": "https://slotly.app/b/..."
+  }
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST https://slotly.app/mcp/v1/tools/call \
+  -H "Authorization: Bearer sltly_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "slotly.create_booking",
+    "params": {
+      "attendee_user_ids": [42, 56],
+      "start": "2026-11-04T10:00:00+01:00",
+      "end":   "2026-11-04T10:30:00+01:00",
+      "title": "Quick sync"
+    },
+    "idempotency_key": "my-client-abc123"
+  }'
+```
+
+---
+
+### 8.2 `slotly.update_booking`
+
+Changes the start/end and/or title of a booking the authenticated user
+hosts. On a time change, the old provider event is deleted and a new one
+is created with the new time; attendees receive the standard provider
+reschedule notification.
+
+**Params:**
+
+| Field | Type | Required |
+|---|---|---|
+| `booking_uuid` | UUID string | yes |
+| `start` | ISO 8601 | if changing time |
+| `end` | ISO 8601 | if changing time (must accompany `start`) |
+| `title` | string | if changing title |
+
+At least one of `(start+end)` or `title` must be set.
+
+**Returns:**
+
+```json
+{
+  "result": {
+    "booking_uuid": "...",
+    "status": "updated",
+    "event": {"id": "...", "html_link": "...", "start": "...", "end": "...", "provider": "google"},
+    "start": "...",
+    "end": "...",
+    "title": "..."
+  }
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST https://slotly.app/mcp/v1/tools/call \
+  -H "Authorization: Bearer sltly_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "slotly.update_booking",
+    "params": {
+      "booking_uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "start": "2026-11-04T11:00:00+01:00",
+      "end":   "2026-11-04T11:30:00+01:00"
+    }
+  }'
+```
+
+---
+
+### 8.3 `slotly.cancel_booking`
+
+Idempotent at the server side (second call on a cancelled booking returns
+current state without re-sending the cancellation email).
+
+**Params:**
+
+| Field | Type | Required |
+|---|---|---|
+| `booking_uuid` | UUID string | yes |
+| `reason` | string ≤500 chars | no |
+
+**Returns:**
+
+```json
+{
+  "result": {
+    "booking_uuid": "...",
+    "status": "cancelled",
+    "cancelled_at": "2026-11-04T09:00:00+01:00",
+    "reason": "Rescheduled to next week"
+  }
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST https://slotly.app/mcp/v1/tools/call \
+  -H "Authorization: Bearer sltly_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "slotly.cancel_booking",
+    "params": {
+      "booking_uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "reason": "Rescheduled to next week"
+    }
+  }'
+```
+
+---
+
+### 8.4 `slotly.create_event`
+
+Writes a bare calendar event to the host's write calendar. No `Booking`
+row is created — use this for "put a reminder on my calendar" scenarios
+rather than scheduled meetings.
+
+**Params:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `start` | ISO 8601 | yes | with TZ offset |
+| `end` | ISO 8601 | yes | 5 min ≤ end-start ≤ 24 h |
+| `title` | string | yes | 1-200 chars |
+| `calendar_id` | string | no | Defaults to host's `write_calendar_id`. |
+| `attendee_emails` | string[] | no | ≤50; raw email format, no User lookup. |
+
+**Returns:**
+
+```json
+{
+  "result": {
+    "status": "ok",
+    "event": {
+      "id": "google_event_id",
+      "html_link": "https://calendar.google.com/...",
+      "start": "2026-11-04T10:00:00+01:00",
+      "end": "2026-11-04T10:30:00+01:00",
+      "provider": "google",
+      "calendar_id": "primary"
+    },
+    "invited_emails": []
+  }
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST https://slotly.app/mcp/v1/tools/call \
+  -H "Authorization: Bearer sltly_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "slotly.create_event",
+    "params": {
+      "start": "2026-11-04T10:00:00+01:00",
+      "end":   "2026-11-04T10:30:00+01:00",
+      "title": "Team standup reminder"
+    }
+  }'
+```
+
+---
+
+### Confirm-before-write pattern (MCP client guidance)
+
+Writes are side-effectful. We recommend clients:
+
+1. Call `tools/list` and inspect `annotations.sensitivity`.
+2. For any tool where `sensitivity == "write_external"`, prompt the user with the full params payload before dispatch.
+3. Always set `idempotency_key` (any client-generated UUID). Repeat on retry.
+4. On `503 upstream_oauth_failed`, link the user to `/settings/calendars` to reconnect.
+5. On `400 slot_conflict`, re-run `slotly.find_slots` with the same window and offer the user a different slot.
+
+---
+
+## Deploy checklist
+
+After merging a release that touches `/mcp/v1/*`:
+
+1. Verify migrations applied: `python manage.py migrate --plan` shows no pending.
+2. Create a test token in `/settings/api-tokens` with scopes `list_teams, find_slots, create_booking`.
+3. Smoke read: `curl -H "Authorization: Bearer sltly_abc123..." https://slotly.app/mcp/v1/tools/list` → 200, see 8 tools with `annotations.sensitivity` set.
+4. Smoke write (if `create_booking` is in your scopes):
+   ```bash
+   curl -X POST https://slotly.app/mcp/v1/tools/call \
+     -H "Authorization: Bearer sltly_abc123..." \
+     -H "Content-Type: application/json" \
+     -d '{"name":"slotly.create_booking","params":{"attendee_user_ids":[<test-user-id>],"start":"<future ISO>","end":"<future ISO + 30m>"},"idempotency_key":"smoke-test-1"}'
+   ```
+5. Verify the Booking row exists in `/admin/scheduling/booking/` and the event appears in the test host's Google / Outlook calendar.
+6. Hit the same curl again with the same `idempotency_key` → identical response, no new Booking row.
+7. In admin, confirm two `MCPCall` rows: first `status="ok"`, second `status="ok" error_code="idempotency_hit"`.
+8. Revoke the test token in `/settings/api-tokens`. Subsequent curl → 401.
