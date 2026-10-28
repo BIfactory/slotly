@@ -15,13 +15,14 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from django.db.models import CheckConstraint, Q, UniqueConstraint
 
 
 class GoogleAccount(models.Model):
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="google_account",
+        related_name="google_accounts",
     )
     # Email of the linked Google identity. May differ from the user's Slotly
     # email — we display this so the user can see *which* Google account is
@@ -48,6 +49,12 @@ class GoogleAccount(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=("user",))]
+        constraints = [
+            UniqueConstraint(
+                fields=("user", "google_email"),
+                name="unique_google_account_per_user_email",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.user_id}:{self.google_email}"
@@ -268,10 +275,10 @@ class MicrosoftAccount(models.Model):
     calendar via ``/me/calendars/<id>/events``.
     """
 
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="microsoft_account",
+        related_name="microsoft_accounts",
     )
     microsoft_email = models.EmailField()
 
@@ -287,6 +294,75 @@ class MicrosoftAccount(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=("user",))]
+        constraints = [
+            UniqueConstraint(
+                fields=("user", "microsoft_email"),
+                name="unique_microsoft_account_per_user_email",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.user_id}:{self.microsoft_email}"
+
+
+class WriteCalendarDefault(models.Model):
+    """Records which of the user's linked OAuth accounts is the
+    *write-side provider* — the one that receives new calendar events.
+
+    Exactly one of ``google_account`` / ``microsoft_account`` must be
+    set; the other must be NULL.  This invariant is enforced at the DB
+    level via a CheckConstraint (XOR) so no application bug can violate it.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="write_calendar_default",
+    )
+    google_account = models.ForeignKey(
+        "GoogleAccount",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    microsoft_account = models.ForeignKey(
+        "MicrosoftAccount",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        constraints = [
+            CheckConstraint(
+                check=(
+                    Q(google_account__isnull=False) & Q(microsoft_account__isnull=True)
+                )
+                | (
+                    Q(google_account__isnull=True) & Q(microsoft_account__isnull=False)
+                ),
+                name="write_default_exactly_one_provider",
+            ),
+        ]
+
+    @property
+    def selected_account(self):
+        """Return the non-null account (Google or Microsoft)."""
+        if self.google_account_id is not None:
+            return self.google_account
+        return self.microsoft_account
+
+    @property
+    def provider(self) -> str:
+        """Return ``"google"`` or ``"microsoft"``."""
+        return "google" if self.google_account_id is not None else "microsoft"
+
+    @property
+    def write_calendar_id(self) -> str:
+        """Proxy the write_calendar_id from whichever account is selected."""
+        return self.selected_account.write_calendar_id
+
+    def __str__(self) -> str:
+        return f"WriteCalendarDefault(user={self.user_id}, provider={self.provider})"
