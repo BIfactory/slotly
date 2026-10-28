@@ -153,6 +153,20 @@ Po deploy zkontroluj:
    se objeví žádost → **Approve** → do inboxu návštěvníka přijde pozvánka
    bez Meet linku, ale s adresou v popisu.
 
+## 6. Podpora více účtů
+
+Uživatel si může připojit více Google i více Microsoft účtů do jednoho Slotly
+profilu. Systém podporuje až 10 účtů na poskytovatele (soft cap). Jeden účet
+přes všechny poskytovatele je označen jako *default* — sem se zapisují nové
+schůzky a události, které Slotly vytváří.
+
+Na stránce `/settings/calendars` vidí uživatel tabulku všech připojených účtů
+s možností zvolit default pomocí radio tlačítka. Připojení stejné e-mailové
+adresy podruhé obnoví token místo vytvoření nového řádku; připojení jiné
+adresy přidá nový účet do seznamu. Legacy endpointy `/api/google-account` a
+`/api/microsoft-account` zůstávají funkční a vrací default účet (nebo první
+dostupný) pro zpětnou kompatibilitu.
+
 ## 7. Když něco nefunguje
 
 | Symptom | Kde koukat |

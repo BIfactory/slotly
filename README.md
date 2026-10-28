@@ -1,6 +1,6 @@
 # Slotly
 
-A free web app for finding shared availability across team calendars. Users subscribe to their iCal/ICS URLs (Google, Apple iCloud, Outlook) and the app shows when everyone in a selected group is free.
+A free web app for finding shared availability across team calendars. Users subscribe to their iCal/ICS URLs (Google, Apple iCloud, Outlook) and the app shows when everyone in a selected group is free. Supports connecting multiple Google and Microsoft calendar accounts; one is the active write target for bookings and events.
 
 See [`PRD.md`](./PRD.md) for the full product spec.
 
