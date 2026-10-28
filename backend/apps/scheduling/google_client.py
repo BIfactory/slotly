@@ -145,17 +145,45 @@ class _Credentials:
     expires_at: datetime
 
 
-def get_credentials(user, *, refresh_grace: timedelta = timedelta(seconds=60)) -> _Credentials:
+def get_credentials(
+    user,
+    account_id: int | None = None,
+    *,
+    refresh_grace: timedelta = timedelta(seconds=60),
+) -> _Credentials:
     """
     Resolve a usable access token for ``user``. Refreshes the stored token
     via Google when within ``refresh_grace`` of expiry, persisting the new
-    access_token + expires_at in the DB. Raises if no GoogleAccount or if
-    the refresh was rejected (caller should delete the row + reconnect).
+    access_token + expires_at in the DB.
+
+    If ``account_id`` is given, loads that specific GoogleAccount (must
+    belong to ``user``).  If ``None``, reads the user's WriteCalendarDefault;
+    if none exists or default is not Google, raises GoogleOAuthError (same
+    shape as the old GoogleAccount.DoesNotExist path so existing callers'
+    error handling still fires).
     """
-    try:
-        account = GoogleAccount.objects.get(user=user)
-    except GoogleAccount.DoesNotExist as exc:
-        raise GoogleOAuthError("user has no connected Google account") from exc
+    from .models import WriteCalendarDefault  # local import — avoids circular
+
+    if account_id is not None:
+        try:
+            account = GoogleAccount.objects.get(pk=account_id, user=user)
+        except GoogleAccount.DoesNotExist as exc:
+            raise GoogleOAuthError("Google account not found") from exc
+    else:
+        default = (
+            WriteCalendarDefault.objects
+            .select_related("google_account")
+            .filter(user=user)
+            .first()
+        )
+        if default is not None and default.google_account_id is not None:
+            account = default.google_account
+        else:
+            # Fall back to any connected account so the existing single-account
+            # path still works for users who have one account but no explicit default.
+            account = GoogleAccount.objects.filter(user=user).first()
+            if account is None:
+                raise GoogleOAuthError("user has no connected Google account")
 
     if account.expires_at > djtz.now() + refresh_grace:
         return _Credentials(

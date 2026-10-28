@@ -42,7 +42,7 @@ from .google_client import (
     fetch_userinfo,
     list_writable_calendars,
 )
-from .models import Booking, BookingRequest, GoogleAccount, MeetingType, MicrosoftAccount
+from .models import Booking, BookingRequest, GoogleAccount, MeetingType, MicrosoftAccount, WriteCalendarDefault
 from .security import encrypt
 from . import services as _svc
 from .services import (
@@ -119,6 +119,102 @@ class OAuthStartView(APIView):
                 status=503,
             )
         return HttpResponseRedirect(url)
+
+
+def _upsert_google_account(
+    user,
+    *,
+    google_email: str,
+    access_token: str,
+    refresh_token_encrypted: str,
+    expires_at,
+    scope: str,
+) -> tuple[GoogleAccount, bool]:
+    """Upsert a GoogleAccount keyed on (user, google_email) and optionally
+    create a WriteCalendarDefault if this is the user's first Google account.
+
+    Returns (account, created) where ``created`` is True on the first insert.
+    Handles the IntegrityError race that can occur when two simultaneous
+    OAuth callbacks arrive for the same (user, email).
+    """
+    from django.db import IntegrityError, transaction
+
+    defaults = {
+        "access_token_encrypted": encrypt(access_token),
+        "refresh_token_encrypted": refresh_token_encrypted,
+        "expires_at": expires_at,
+        "scope": scope[:500],
+    }
+    try:
+        with transaction.atomic():
+            account, created = GoogleAccount.objects.update_or_create(
+                user=user,
+                google_email=google_email[:254],
+                defaults=defaults,
+            )
+    except IntegrityError:
+        # Race: another request already inserted the row between our SELECT
+        # and INSERT.  Fall back to a plain get+update.
+        account = GoogleAccount.objects.get(user=user, google_email=google_email[:254])
+        for k, v in defaults.items():
+            setattr(account, k, v)
+        account.save(update_fields=list(defaults.keys()) + ["updated_at"])
+        created = False
+
+    if created:
+        # First account for this user — wire up the WriteCalendarDefault unless
+        # the user already has one pointing at a different provider.
+        WriteCalendarDefault.objects.get_or_create(
+            user=user,
+            defaults={"google_account": account},
+        )
+
+    return account, created
+
+
+def _upsert_microsoft_account(
+    user,
+    *,
+    microsoft_email: str,
+    access_token: str,
+    refresh_token_encrypted: str,
+    expires_at,
+    scope: str,
+) -> tuple[MicrosoftAccount, bool]:
+    """Upsert a MicrosoftAccount keyed on (user, microsoft_email) and
+    optionally create a WriteCalendarDefault on first connect.
+
+    Returns (account, created). Handles IntegrityError race.
+    """
+    from django.db import IntegrityError, transaction
+
+    defaults = {
+        "access_token_encrypted": encrypt(access_token),
+        "refresh_token_encrypted": refresh_token_encrypted,
+        "expires_at": expires_at,
+        "scope": scope[:500],
+    }
+    try:
+        with transaction.atomic():
+            account, created = MicrosoftAccount.objects.update_or_create(
+                user=user,
+                microsoft_email=microsoft_email[:254],
+                defaults=defaults,
+            )
+    except IntegrityError:
+        account = MicrosoftAccount.objects.get(user=user, microsoft_email=microsoft_email[:254])
+        for k, v in defaults.items():
+            setattr(account, k, v)
+        account.save(update_fields=list(defaults.keys()) + ["updated_at"])
+        created = False
+
+    if created:
+        WriteCalendarDefault.objects.get_or_create(
+            user=user,
+            defaults={"microsoft_account": account},
+        )
+
+    return account, created
 
 
 @api_view(["GET"])
@@ -230,15 +326,13 @@ def oauth_callback(request: HttpRequest) -> HttpResponseRedirect:
     expires_in = int(token_payload.get("expires_in", 3600))
     expires_at = djtz.now() + timedelta(seconds=expires_in)
 
-    GoogleAccount.objects.update_or_create(
-        user=user,
-        defaults={
-            "google_email": google_email[:254],
-            "access_token_encrypted": encrypt(access_token),
-            "refresh_token_encrypted": refresh_encrypted,
-            "expires_at": expires_at,
-            "scope": token_payload.get("scope", "")[:500],
-        },
+    _upsert_google_account(
+        user,
+        google_email=google_email,
+        access_token=access_token,
+        refresh_token_encrypted=refresh_encrypted,
+        expires_at=expires_at,
+        scope=token_payload.get("scope", ""),
     )
     # Anon flows go to /profile (welcome / next-step) rather than
     # /settings/integrations, which is meant for users who were mid-config.
@@ -256,10 +350,24 @@ class GoogleAccountStatusView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    def _get_account(self, user):
+        """Return the user's Google account to use for single-account API
+        endpoints: prefer the WriteCalendarDefault's google_account if it
+        points at Google, otherwise fall back to the first connected account.
+        Returns None when the user has no Google accounts."""
+        default = (
+            WriteCalendarDefault.objects
+            .select_related("google_account")
+            .filter(user=user, google_account__isnull=False)
+            .first()
+        )
+        if default is not None:
+            return default.google_account
+        return GoogleAccount.objects.filter(user=user).first()
+
     def get(self, request: Request) -> Response:
-        try:
-            account = GoogleAccount.objects.get(user=request.user)
-        except GoogleAccount.DoesNotExist:
+        account = self._get_account(request.user)
+        if account is None:
             return Response({"connected": False})
         return Response({
             "connected": True,
@@ -268,9 +376,8 @@ class GoogleAccountStatusView(APIView):
         })
 
     def patch(self, request: Request) -> Response:
-        try:
-            account = GoogleAccount.objects.get(user=request.user)
-        except GoogleAccount.DoesNotExist:
+        account = self._get_account(request.user)
+        if account is None:
             return Response({"detail": "Google Calendar is not connected."}, status=404)
         raw = request.data.get("write_calendar_id")
         if not isinstance(raw, str) or not raw.strip():
@@ -310,9 +417,7 @@ class WritableCalendarsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request) -> Response:
-        try:
-            GoogleAccount.objects.get(user=request.user)
-        except GoogleAccount.DoesNotExist:
+        if not GoogleAccount.objects.filter(user=request.user).exists():
             return Response({"detail": "Google Calendar is not connected."}, status=404)
         try:
             items = list_writable_calendars(request.user)
@@ -459,15 +564,13 @@ def microsoft_oauth_callback(request: HttpRequest) -> HttpResponseRedirect:
     expires_in = int(token_payload.get("expires_in", 3600))
     expires_at = djtz.now() + timedelta(seconds=expires_in)
 
-    MicrosoftAccount.objects.update_or_create(
-        user=user,
-        defaults={
-            "microsoft_email": ms_email[:254],
-            "access_token_encrypted": encrypt(access_token),
-            "refresh_token_encrypted": refresh_encrypted,
-            "expires_at": expires_at,
-            "scope": token_payload.get("scope", "")[:500],
-        },
+    _upsert_microsoft_account(
+        user,
+        microsoft_email=ms_email,
+        access_token=access_token,
+        refresh_token_encrypted=refresh_encrypted,
+        expires_at=expires_at,
+        scope=token_payload.get("scope", ""),
     )
     return _frontend_return(
         "connected",
@@ -482,10 +585,21 @@ class MicrosoftAccountStatusView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    def _get_account(self, user):
+        """Prefer WriteCalendarDefault.microsoft_account; fall back to first."""
+        default = (
+            WriteCalendarDefault.objects
+            .select_related("microsoft_account")
+            .filter(user=user, microsoft_account__isnull=False)
+            .first()
+        )
+        if default is not None:
+            return default.microsoft_account
+        return MicrosoftAccount.objects.filter(user=user).first()
+
     def get(self, request: Request) -> Response:
-        try:
-            account = MicrosoftAccount.objects.get(user=request.user)
-        except MicrosoftAccount.DoesNotExist:
+        account = self._get_account(request.user)
+        if account is None:
             return Response({"connected": False})
         return Response({
             "connected": True,
@@ -494,9 +608,8 @@ class MicrosoftAccountStatusView(APIView):
         })
 
     def patch(self, request: Request) -> Response:
-        try:
-            account = MicrosoftAccount.objects.get(user=request.user)
-        except MicrosoftAccount.DoesNotExist:
+        account = self._get_account(request.user)
+        if account is None:
             return Response({"detail": "Microsoft is not connected."}, status=404)
         raw = request.data.get("write_calendar_id")
         # Empty string is valid — Graph treats /me/events as "primary calendar".
@@ -529,9 +642,7 @@ class MicrosoftWritableCalendarsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request) -> Response:
-        try:
-            MicrosoftAccount.objects.get(user=request.user)
-        except MicrosoftAccount.DoesNotExist:
+        if not MicrosoftAccount.objects.filter(user=request.user).exists():
             return Response({"detail": "Microsoft is not connected."}, status=404)
         try:
             items = _graph.list_writable_calendars(request.user)

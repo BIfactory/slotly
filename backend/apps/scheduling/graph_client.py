@@ -157,11 +157,39 @@ class _Credentials:
     expires_at: datetime
 
 
-def get_credentials(user, *, refresh_grace: timedelta = timedelta(seconds=60)) -> _Credentials:
-    try:
-        account = MicrosoftAccount.objects.get(user=user)
-    except MicrosoftAccount.DoesNotExist as exc:
-        raise MicrosoftOAuthError("user has no connected Microsoft account") from exc
+def get_credentials(
+    user,
+    account_id: int | None = None,
+    *,
+    refresh_grace: timedelta = timedelta(seconds=60),
+) -> _Credentials:
+    """
+    Resolve a usable Microsoft access token for ``user``.
+
+    If ``account_id`` is given, loads that specific MicrosoftAccount.
+    If ``None``, reads WriteCalendarDefault; falls back to any connected
+    account so existing single-account callers still work.
+    """
+    from .models import WriteCalendarDefault  # local import — avoids circular
+
+    if account_id is not None:
+        try:
+            account = MicrosoftAccount.objects.get(pk=account_id, user=user)
+        except MicrosoftAccount.DoesNotExist as exc:
+            raise MicrosoftOAuthError("Microsoft account not found") from exc
+    else:
+        default = (
+            WriteCalendarDefault.objects
+            .select_related("microsoft_account")
+            .filter(user=user)
+            .first()
+        )
+        if default is not None and default.microsoft_account_id is not None:
+            account = default.microsoft_account
+        else:
+            account = MicrosoftAccount.objects.filter(user=user).first()
+            if account is None:
+                raise MicrosoftOAuthError("user has no connected Microsoft account")
 
     if account.expires_at > djtz.now() + refresh_grace:
         return _Credentials(
