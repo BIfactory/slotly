@@ -567,6 +567,11 @@ class MicrosoftOAuthStartView(APIView):
 def microsoft_oauth_callback(request: HttpRequest) -> HttpResponseRedirect:
     err = request.GET.get("error")
     if err:
+        # Detect AADSTS65001 (admin consent required) in error_description so
+        # the frontend can show a specific "ask your IT admin" message.
+        err_desc = request.GET.get("error_description", "")
+        if "AADSTS65001" in err_desc:
+            return _frontend_return("error", provider="microsoft", reason="admin_consent_required")
         return _frontend_return("error", provider="microsoft", reason=err[:64])
 
     code = request.GET.get("code", "")

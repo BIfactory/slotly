@@ -256,12 +256,22 @@ function CalendarsPageInner() {
             now book meetings and receive bookings.
           </Banner>
         )}
-        {microsoftParam === "error" && (
-          <Banner kind="err">
-            Microsoft connection didn&apos;t go through{reason ? ` (${reason})` : ""}.
-            Try again — if it keeps failing, sign out of Microsoft in another tab first.
-          </Banner>
-        )}
+        {microsoftParam === "error" &&
+          (reason === "admin_consent_required" ? (
+            <Banner kind="err">
+              Your IT admin needs to approve Slotly for your organization before
+              you can connect. Ask them to visit:{" "}
+              <code className="text-xs">
+                https://login.microsoftonline.com/&lt;tenant-id&gt;/adminconsent?client_id=de731224-93d5-4c37-8e53-e31e31fa478e
+              </code>
+            </Banner>
+          ) : (
+            <Banner kind="err">
+              Microsoft connection didn&apos;t go through{reason ? ` (${reason})` : ""}.
+              Try again — if it keeps failing, sign out of Microsoft in another tab
+              first.
+            </Banner>
+          ))}
         {errorParam === "too_many_accounts" && (
           <Banner kind="err">
             You can connect at most 10 accounts per provider. Disconnect one before
