@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.contrib import admin
 
-from .models import APIToken, MCPCall
+from .models import APIToken, IdempotencyRecord, MCPCall
 
 
 @admin.register(APIToken)
@@ -17,6 +17,22 @@ class MCPCallAdmin(admin.ModelAdmin):
     list_display = ("id", "token", "capability", "status", "duration_ms", "error_code", "created_at")
     list_filter = ("status", "capability")
     search_fields = ("token__prefix", "capability")
+
+    def has_add_permission(self, request) -> bool:
+        return False
+
+    def has_change_permission(self, request, obj=None) -> bool:
+        return False
+
+    def has_delete_permission(self, request, obj=None) -> bool:
+        return False
+
+
+@admin.register(IdempotencyRecord)
+class IdempotencyRecordAdmin(admin.ModelAdmin):
+    list_display = ("id", "token", "capability", "key", "booking_uuid", "created_at")
+    list_filter = ("capability",)
+    search_fields = ("token__prefix", "capability", "key")
 
     def has_add_permission(self, request) -> bool:
         return False
