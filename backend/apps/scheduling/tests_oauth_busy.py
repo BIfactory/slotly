@@ -1,11 +1,12 @@
 """Tests for OAuth-driven busy intervals (OAuthBusyWindow model + sync tasks + search integration)."""
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from django.test import TestCase
 
 from apps.accounts.models import User
 from apps.scheduling.models import GoogleAccount, MicrosoftAccount, OAuthBusyWindow
+from apps.scheduling.tasks import sync_one_oauth_account
 
 
 class OAuthBusyWindowSchemaTests(TestCase):
@@ -74,3 +75,149 @@ class OAuthBusyWindowSchemaTests(TestCase):
         )
         ms.delete()
         self.assertEqual(OAuthBusyWindow.objects.count(), 0)
+
+
+# ---------------------------------------------------------------------------
+# Sync task tests (Task 2)
+# ---------------------------------------------------------------------------
+
+def _make_busy(cal_id="primary", hours_from_now=2, duration=1):
+    """Helper: return a (cal_id, starts_at, ends_at) tuple."""
+    now = datetime.now(timezone.utc)
+    return (cal_id, now + timedelta(hours=hours_from_now), now + timedelta(hours=hours_from_now + duration))
+
+
+class SyncOneOAuthAccountGoogleTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="bob@x.com", password="x" * 12)
+        self.g = GoogleAccount.objects.create(
+            user=self.user,
+            google_email="bob@gmail.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    @patch("apps.scheduling.google_client.fetch_freebusy")
+    def test_sync_writes_busy_windows(self, mock_freebusy, mock_calendars):
+        """Successful sync writes OAuthBusyWindow rows for the account."""
+        busy_rows = [_make_busy("primary"), _make_busy("work@example.com")]
+        mock_calendars.return_value = [{"id": "primary"}, {"id": "work@example.com"}]
+        mock_freebusy.return_value = busy_rows
+
+        result = sync_one_oauth_account("google", self.g.pk)
+
+        self.assertEqual(result["written"], 2)
+        self.assertEqual(OAuthBusyWindow.objects.filter(google_account=self.g).count(), 2)
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    @patch("apps.scheduling.google_client.fetch_freebusy")
+    def test_sync_replaces_old_rows(self, mock_freebusy, mock_calendars):
+        """Sync atomically replaces existing rows for this account (idempotent)."""
+        now = datetime.now(timezone.utc)
+        # Pre-existing stale row
+        OAuthBusyWindow.objects.create(
+            user=self.user, provider="google", google_account=self.g,
+            calendar_id="stale", starts_at=now, ends_at=now + timedelta(hours=1),
+        )
+
+        mock_calendars.return_value = [{"id": "primary"}]
+        mock_freebusy.return_value = [_make_busy("primary")]
+
+        sync_one_oauth_account("google", self.g.pk)
+
+        windows = list(OAuthBusyWindow.objects.filter(google_account=self.g))
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].calendar_id, "primary")
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    def test_broken_oauth_token_skips_preserves_rows(self, mock_calendars):
+        """Broken OAuth token: task skips account, keeps existing OAuthBusyWindow rows."""
+        from apps.scheduling.google_client import GoogleOAuthError
+
+        now = datetime.now(timezone.utc)
+        OAuthBusyWindow.objects.create(
+            user=self.user, provider="google", google_account=self.g,
+            calendar_id="primary", starts_at=now, ends_at=now + timedelta(hours=1),
+        )
+
+        mock_calendars.side_effect = GoogleOAuthError("token revoked")
+
+        result = sync_one_oauth_account("google", self.g.pk)
+
+        self.assertIn("error", result)
+        # Existing rows must survive
+        self.assertEqual(OAuthBusyWindow.objects.filter(google_account=self.g).count(), 1)
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    @patch("apps.scheduling.google_client.fetch_freebusy")
+    def test_new_calendar_mid_cycle_picked_up(self, mock_freebusy, mock_calendars):
+        """Re-listing calendarList on each poll picks up newly added calendars.
+        This test covers the 'new calendar mid-cycle' review focus case.
+        """
+        # First poll: one calendar
+        mock_calendars.return_value = [{"id": "primary"}]
+        mock_freebusy.return_value = [_make_busy("primary")]
+        sync_one_oauth_account("google", self.g.pk)
+        self.assertEqual(OAuthBusyWindow.objects.filter(google_account=self.g).count(), 1)
+
+        # Second poll: user added a new calendar on Google side
+        mock_calendars.return_value = [{"id": "primary"}, {"id": "new-cal@group.calendar.google.com"}]
+        mock_freebusy.return_value = [
+            _make_busy("primary"),
+            _make_busy("new-cal@group.calendar.google.com"),
+        ]
+        sync_one_oauth_account("google", self.g.pk)
+
+        windows = list(OAuthBusyWindow.objects.filter(google_account=self.g).order_by("calendar_id"))
+        self.assertEqual(len(windows), 2)
+        cal_ids = {w.calendar_id for w in windows}
+        self.assertIn("new-cal@group.calendar.google.com", cal_ids)
+
+    def test_skips_nonexistent_account(self):
+        """sync_one_oauth_account returns skipped dict if account was deleted."""
+        result = sync_one_oauth_account("google", 99999)
+        self.assertTrue(result.get("skipped"))
+
+
+class SyncOneOAuthAccountMicrosoftTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="carol@x.com", password="x" * 12)
+        self.ms = MicrosoftAccount.objects.create(
+            user=self.user,
+            microsoft_email="carol@outlook.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    @patch("apps.scheduling.graph_client.list_all_calendars")
+    @patch("apps.scheduling.graph_client.fetch_freebusy")
+    def test_sync_writes_busy_windows(self, mock_freebusy, mock_calendars):
+        """Microsoft sync writes OAuthBusyWindow rows for the account."""
+        mock_calendars.return_value = [{"id": "cal-abc-123"}]
+        mock_freebusy.return_value = [_make_busy("cal-abc-123")]
+
+        result = sync_one_oauth_account("microsoft", self.ms.pk)
+
+        self.assertEqual(result["written"], 1)
+        self.assertEqual(OAuthBusyWindow.objects.filter(microsoft_account=self.ms).count(), 1)
+
+    @patch("apps.scheduling.graph_client.list_all_calendars")
+    def test_broken_oauth_token_preserves_rows(self, mock_calendars):
+        """Microsoft broken token: task skips, keeps existing rows."""
+        from apps.scheduling.graph_client import MicrosoftOAuthError
+
+        now = datetime.now(timezone.utc)
+        OAuthBusyWindow.objects.create(
+            user=self.user, provider="microsoft", microsoft_account=self.ms,
+            calendar_id="primary", starts_at=now, ends_at=now + timedelta(hours=1),
+        )
+
+        mock_calendars.side_effect = MicrosoftOAuthError("token revoked")
+
+        result = sync_one_oauth_account("microsoft", self.ms.pk)
+
+        self.assertIn("error", result)
+        self.assertEqual(OAuthBusyWindow.objects.filter(microsoft_account=self.ms).count(), 1)

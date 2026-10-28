@@ -252,6 +252,97 @@ def list_writable_calendars(user, account: "MicrosoftAccount | None" = None) -> 
     return out
 
 
+def list_all_calendars(account: "MicrosoftAccount") -> list[dict]:
+    """Return all calendars for this Microsoft OAuth account (read-side — not
+    filtered to writable). Each item: {id, summary, primary, access_role}.
+    Used by the freebusy sync to discover every calendar the account can see.
+    """
+    creds = get_credentials(account.user, account.id)
+    with _bearer(creds) as client:
+        r = client.get("/me/calendars")
+    if r.status_code != 200:
+        raise MicrosoftApiError(r.status_code, f"/me/calendars: {r.text[:200]}")
+    items = r.json().get("value", [])
+    return [
+        {
+            "id": it.get("id", ""),
+            "summary": it.get("name", ""),
+            "primary": bool(it.get("isDefaultCalendar", False)),
+            "access_role": "owner" if it.get("owner") else "reader",
+        }
+        for it in items
+    ]
+
+
+def fetch_freebusy(
+    account: "MicrosoftAccount",
+    calendar_ids: list[str],
+    start: datetime,
+    end: datetime,
+) -> list[tuple[str, datetime, datetime]]:
+    """POST /me/calendar/getSchedule for the given calendar IDs (as SMTP
+    addresses or calendar IDs). Microsoft Graph accepts up to 20 schedules
+    per request.
+
+    Returns a list of (calendar_id, starts_at, ends_at) for every busy
+    interval. Microsoft's getSchedule only returns busy/tentative/oof items;
+    free items are excluded.
+
+    Note: MS Graph getSchedule uses email addresses as schedule IDs. We pass
+    the calendar IDs from the calendarList — for personal accounts these are
+    UUIDs. The Graph freebusy endpoint keyed by calendarId is not directly
+    supported; instead we use the account's primary email + the calendars.
+    For multi-calendar support, we iterate per calendar using the direct
+    /me/calendars/{id}/calendarView approach as a fallback.
+    """
+    # MS Graph getSchedule expects email addresses, not calendar UUIDs.
+    # For the freebusy use case we use calendarView per calendar instead,
+    # which gives us actual busy intervals regardless of transparency:
+    # GET /me/calendars/{id}/calendarView?startDateTime=...&endDateTime=...
+    # Only return events where showAs is busy/tentative/oof (not free/workingElsewhere).
+    BUSY_SHOW_AS = {"busy", "tentative", "oof"}
+    start_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_str = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    creds = get_credentials(account.user, account.id)
+    out: list[tuple[str, datetime, datetime]] = []
+
+    with _bearer(creds) as client:
+        for cal_id in calendar_ids:
+            url = f"/me/calendars/{cal_id}/calendarView"
+            r = client.get(url, params={
+                "startDateTime": start_str,
+                "endDateTime": end_str,
+                "$select": "start,end,showAs",
+                "$top": 1000,
+            })
+            if r.status_code != 200:
+                # Log and skip this calendar (e.g. permission denied)
+                logger.warning(
+                    "fetch_freebusy MS calendarView %s returned %s", cal_id, r.status_code
+                )
+                continue
+            for event in r.json().get("value", []):
+                if event.get("showAs", "busy").lower() not in BUSY_SHOW_AS:
+                    continue
+                try:
+                    s = _parse_ms_datetime(event["start"]["dateTime"])
+                    e = _parse_ms_datetime(event["end"]["dateTime"])
+                    out.append((cal_id, s, e))
+                except (KeyError, ValueError) as exc:
+                    logger.warning("fetch_freebusy MS parse error: %s", exc)
+    return out
+
+
+def _parse_ms_datetime(s: str) -> datetime:
+    """Parse MS Graph datetime string (ISO 8601, may lack TZ — Graph returns UTC)."""
+    from datetime import timezone as _tz
+    dt = datetime.fromisoformat(s.rstrip("Z"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_tz.utc)
+    return dt
+
+
 def create_calendar_event(
     user,
     *,

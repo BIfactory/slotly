@@ -200,6 +200,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "mcp.purge_old_idempotency",
         "schedule": 3600.0,  # hourly
     },
+    # OAuth-driven busy intervals: poll all connected Google/Microsoft accounts
+    # every 5 min, matching the ICS cadence. Rows stored in OAuthBusyWindow.
+    "oauth-busy-sync-all": {
+        "task": "scheduling.sync_all_oauth_accounts",
+        "schedule": 300.0,  # 5 min, matches ICS cadence
+    },
 }
 
 CACHES = {
