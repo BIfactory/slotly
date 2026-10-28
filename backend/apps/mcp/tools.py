@@ -141,18 +141,159 @@ def list_members(user, params):
         "type": "object",
         "properties": {
             "team_id": {"type": "integer"},
-            "member_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
+            "member_ids": {"type": "array", "items": {"type": "integer"}},
             "duration_min": {"type": "integer", "minimum": 15, "maximum": 1440},
             "window_start": {"type": "string", "format": "date-time"},
             "window_end": {"type": "string", "format": "date-time"},
             "buffer_min": {"type": "integer", "minimum": 0, "maximum": 240, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
         },
-        "required": ["team_id", "member_ids", "duration_min"],
+        "required": ["team_id", "duration_min"],
         "additionalProperties": False,
     },
 )
 def find_slots(user, params):
-    return {"slots": [], "count": 0, "truncated": False}  # dummy — T5 replaces
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    from django.conf import settings
+    from django.db.models import Q
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
+    from rest_framework.exceptions import PermissionDenied, ValidationError
+
+    from apps.accounts.models import User as _User
+    from apps.availability.models import Unavailability
+    from apps.calendars.models import CalendarEvent
+    from apps.search.engine import compute_slots
+    from apps.teams.models import Membership, Team
+
+    # 1. Validate team_id
+    team_id = params.get("team_id")
+    if not isinstance(team_id, int):
+        raise ValidationError({"team_id": "must be an integer"})
+
+    try:
+        team = Team.objects.get(pk=team_id)
+    except Team.DoesNotExist:
+        raise ValidationError({"team_id": "team not found"})
+
+    # 2. Caller must be a member
+    if not Membership.objects.filter(team=team, user=user).exists():
+        raise PermissionDenied({"team_id": "you are not a member of this team"})
+
+    # 3. Validate duration_min
+    duration_min = params.get("duration_min")
+    if not isinstance(duration_min, int) or duration_min < 15 or duration_min > 1440:
+        raise ValidationError({"duration_min": "must be an integer between 15 and 1440"})
+
+    # 4. Resolve member_ids
+    raw_member_ids = params.get("member_ids")
+    if raw_member_ids is not None and len(raw_member_ids) > 0:
+        # Validate uniqueness
+        if len(raw_member_ids) != len(set(raw_member_ids)):
+            raise ValidationError({"member_ids": "must be unique"})
+        # Validate all are members of this team
+        valid_ids = set(
+            Membership.objects.filter(team=team, user_id__in=raw_member_ids)
+            .values_list("user_id", flat=True)
+        )
+        bad = set(raw_member_ids) - valid_ids
+        if bad:
+            raise ValidationError({"member_ids": f"not team members: {sorted(bad)}"})
+        member_ids = set(raw_member_ids)
+    else:
+        # Default to full team roster (R3)
+        member_ids = set(
+            Membership.objects.filter(team=team).values_list("user_id", flat=True)
+        )
+
+    # 5. Parse window_start / window_end
+    now = timezone.now()
+    default_window_start = now
+
+    raw_window_start = params.get("window_start")
+    if raw_window_start is not None:
+        window_start = parse_datetime(raw_window_start)
+        if window_start is None:
+            raise ValidationError({"window_start": "invalid ISO 8601 timestamp"})
+        if window_start.tzinfo is None:
+            raise ValidationError({"window_start": "must include timezone offset"})
+    else:
+        window_start = default_window_start
+
+    raw_window_end = params.get("window_end")
+    if raw_window_end is not None:
+        window_end = parse_datetime(raw_window_end)
+        if window_end is None:
+            raise ValidationError({"window_end": "invalid ISO 8601 timestamp"})
+        if window_end.tzinfo is None:
+            raise ValidationError({"window_end": "must include timezone offset"})
+    else:
+        window_end = window_start + timedelta(days=14)
+
+    # 6. Validate window range
+    if window_end <= window_start:
+        raise ValidationError({"window_end": "must be after window_start"})
+    if (window_end - window_start).days > 60:
+        raise ValidationError({"window_end": "window cannot exceed 60 days"})
+
+    # 7. Validate buffer_min and limit
+    buffer_min = params.get("buffer_min", 0)
+    if not isinstance(buffer_min, int) or buffer_min < 0 or buffer_min > 240:
+        buffer_min = 0
+
+    limit = params.get("limit", 100)
+    if not isinstance(limit, int) or limit < 1 or limit > 500:
+        limit = 100
+
+    # 8. Fetch working hours
+    users = _User.objects.filter(pk__in=member_ids)
+    working_hours_per_user = {u.pk: u.working_hours for u in users}
+
+    # 9. Fetch busy intervals from CalendarEvent (opaque + all-day) and Unavailability
+    events = CalendarEvent.objects.filter(
+        Q(transp=CalendarEvent.Transparency.OPAQUE) | Q(is_all_day=True),
+        calendar__owner_id__in=member_ids,
+        calendar__include_in_busy=True,
+        dtstart__lt=window_end,
+        dtend__gt=window_start,
+    ).exclude(
+        status=CalendarEvent.Status.CANCELLED,
+    ).values("calendar__owner_id", "dtstart", "dtend")
+
+    busy_per_user: dict[int, list] = {uid: [] for uid in member_ids}
+    for ev in events:
+        busy_per_user[ev["calendar__owner_id"]].append((ev["dtstart"], ev["dtend"]))
+
+    for u in Unavailability.objects.filter(
+        user_id__in=member_ids,
+        starts_at__lt=window_end,
+        ends_at__gt=window_start,
+    ).values("user_id", "starts_at", "ends_at"):
+        busy_per_user[u["user_id"]].append((u["starts_at"], u["ends_at"]))
+
+    # 10. Call compute_slots — do NOT create a RecentSearch row
+    slots, truncated = compute_slots(
+        working_hours_per_user=working_hours_per_user,
+        busy_per_user=busy_per_user,
+        user_ids=list(member_ids),
+        window_start=window_start,
+        window_end=window_end,
+        duration=timedelta(minutes=duration_min),
+        buffer=timedelta(minutes=buffer_min),
+        tz=ZoneInfo(settings.TIME_ZONE),
+        max_results=limit,
+    )
+
+    return {
+        "slots": [
+            {"start": s.start.isoformat(), "end": s.end.isoformat()}
+            for s in slots
+        ],
+        "count": len(slots),
+        "truncated": truncated,
+    }
 
 
 @register_tool(
