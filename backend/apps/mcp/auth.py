@@ -60,6 +60,7 @@ _SCOPE_ALIASES: dict[str, str] = {
     "create_booking": "create_booking",
     "update_booking": "create_booking",
     "cancel_booking": "create_booking",
+    "create_event": "write_event",  # T4: scope label differs from capability suffix
 }
 
 
