@@ -52,21 +52,27 @@ class MCPTokenThrottle(BaseThrottle):
             bucket = now // window
             key = f"mcp:rl:{token.pk}:{label}:{bucket}"
 
-            count = cache.get(key, 0)
-            if count >= limit:
+            # Atomic path: try to insert the key with value 1 (first request in
+            # this window).  cache.add() is atomic on Redis, LocMemCache, and
+            # Memcached — it only sets the key if it does not already exist.
+            added = cache.add(key, 1, timeout=window + 5)
+            if added:
+                # Key was absent; this is the first request in the window.
+                continue
+
+            # Key already existed.  Atomically increment and get the new count.
+            try:
+                count = cache.incr(key)
+            except Exception:
+                # Cache unavailable (e.g. incr on a missing key after a race,
+                # or a backend error) — fail open to avoid blocking legitimate
+                # requests due to infrastructure issues.
+                continue
+
+            if count > limit:
                 # Reject: compute seconds until this window expires.
                 self._retry_after = window - (now % window)
                 return False
-
-            # Increment the counter; set TTL slightly longer than the window so
-            # the key is cleaned up automatically even if the window boundary
-            # falls between the get and the set.
-            try:
-                cache.set(key, count + 1, timeout=window + 5)
-            except Exception:
-                # Cache unavailable — fail open to avoid blocking legitimate
-                # requests due to infrastructure issues.
-                pass
 
         return True
 

@@ -58,13 +58,28 @@ class MCPTokenAuthTests(TestCase):
         data = response.data
         self.assertTrue(data["ok"])
         self.assertEqual(data["user_id"], self.user.id)
+        self.assertEqual(data["token_id"], self.token.id)
 
-    # --- Test 2: missing header rejected with 401 ---
+    # --- Test 2: missing header rejected with 401 and correct body shape ---
 
     def test_missing_header_rejected(self):
+        # Use an MCPAPIView-based view so the MCP exception handler is active
+        # and normalises NotAuthenticated → {"error": "invalid_token"}.
+        from rest_framework.permissions import IsAuthenticated
+        from rest_framework.response import Response as DRFResponse
+
+        class _MCPProbe(MCPAPIView):
+            authentication_classes = [MCPTokenAuthentication]
+            permission_classes = [IsAuthenticated]
+
+            def get(self, request):
+                return DRFResponse({"ok": True})
+
+        view = _MCPProbe.as_view()
         request = factory.get("/")
-        response = _probe(request)
+        response = view(request)
         self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data, {"error": "invalid_token"})
 
     # --- Test 3: malformed header rejected ---
 
