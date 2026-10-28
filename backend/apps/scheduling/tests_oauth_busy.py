@@ -303,3 +303,71 @@ class SyncOneOAuthAccountMicrosoftTests(TestCase):
 
         self.assertIn("error", result)
         self.assertEqual(OAuthBusyWindow.objects.filter(microsoft_account=self.ms).count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# Search engine integration tests (Task 4)
+# ---------------------------------------------------------------------------
+
+class OAuthBusyWindowSearchIntegrationTests(TestCase):
+    """Verify OAuthBusyWindow rows are included in SearchView busy computation."""
+
+    def setUp(self):
+        from apps.teams.models import Membership, Team
+
+        self.user = User.objects.create_user(email="eve@x.com", password="x" * 12)
+        self.team = Team.objects.create(name="T", created_by=self.user)
+        Membership.objects.create(team=self.team, user=self.user)
+        self.client.force_login(self.user)
+
+        self.g = GoogleAccount.objects.create(
+            user=self.user,
+            google_email="eve@gmail.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    def _post_check(self, start, end):
+        from django.test import Client as DjangoClient
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        return client.post("/api/search/check-time", {
+            "team_id": self.team.pk,
+            "member_ids": [self.user.pk],
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+        }, format="json")
+
+    def test_oauth_busy_window_makes_slot_busy(self):
+        """OAuthBusyWindow row covering a time window makes that window report busy."""
+        now = datetime.now(timezone.utc)
+        slot_start = now + timedelta(hours=2)
+        slot_end = now + timedelta(hours=3)
+
+        OAuthBusyWindow.objects.create(
+            user=self.user,
+            provider="google",
+            google_account=self.g,
+            calendar_id="primary",
+            starts_at=slot_start,
+            ends_at=slot_end,
+        )
+
+        resp = self._post_check(slot_start, slot_end)
+        self.assertEqual(resp.status_code, 200)
+        people = resp.data["people"]
+        self.assertEqual(len(people), 1)
+        self.assertEqual(people[0]["status"], "busy")
+
+    def test_no_oauth_window_means_slot_free(self):
+        """Without OAuthBusyWindow rows, the slot is free."""
+        now = datetime.now(timezone.utc)
+        slot_start = now + timedelta(hours=2)
+        slot_end = now + timedelta(hours=3)
+
+        resp = self._post_check(slot_start, slot_end)
+        self.assertEqual(resp.status_code, 200)
+        people = resp.data["people"]
+        self.assertEqual(people[0]["status"], "free")

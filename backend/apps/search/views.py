@@ -16,6 +16,7 @@ from rest_framework.viewsets import ModelViewSet
 
 from apps.availability.models import Unavailability
 from apps.calendars.models import CalendarEvent
+from apps.scheduling.models import OAuthBusyWindow
 from apps.teams.models import Membership, Team
 from apps.teams.permissions import is_member
 
@@ -94,6 +95,17 @@ class SearchView(APIView):
             ends_at__gt=data["window_start"],
         ).values("user_id", "starts_at", "ends_at"):
             busy_per_user[u["user_id"]].append((u["starts_at"], u["ends_at"]))
+
+        # OAuth busy intervals — union with ICS pipeline (not a replacement).
+        # Privacy: OAuthBusyWindow stores only (starts_at, ends_at), no event details.
+        # Semantic note: all-day transparent events are NOT included here (Google
+        # freebusy semantics); ICS pipeline still treats them as busy. See docs/oauth-busy.md.
+        for ob in OAuthBusyWindow.objects.filter(
+            user_id__in=team_member_ids,
+            starts_at__lt=data["window_end"],
+            ends_at__gt=data["window_start"],
+        ).values("user_id", "starts_at", "ends_at"):
+            busy_per_user[ob["user_id"]].append((ob["starts_at"], ob["ends_at"]))
 
         slots, truncated = compute_slots(
             working_hours_per_user=working_hours_per_user,
@@ -199,6 +211,16 @@ class CheckTimeView(APIView):
         ).values("user_id", "starts_at", "ends_at"):
             conflicts_per_user[u["user_id"]].append(
                 (max(u["starts_at"], win_start), min(u["ends_at"], win_end)),
+            )
+
+        # OAuth busy intervals — union with ICS pipeline (not a replacement).
+        for ob in OAuthBusyWindow.objects.filter(
+            user_id__in=team_member_ids,
+            starts_at__lt=win_end,
+            ends_at__gt=win_start,
+        ).values("user_id", "starts_at", "ends_at"):
+            conflicts_per_user[ob["user_id"]].append(
+                (max(ob["starts_at"], win_start), min(ob["ends_at"], win_end)),
             )
 
         users = User.objects.filter(pk__in=team_member_ids).order_by(
