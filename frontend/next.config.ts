@@ -14,6 +14,11 @@ const nextConfig: NextConfig = {
       { source: "/_allauth/:path*", destination: `${API}/_allauth/:path*` },
       { source: "/api/:path*", destination: `${API}/api/:path*` },
       { source: "/healthz", destination: `${API}/healthz` },
+      // MCP spec endpoint — bearer-token-authed, external agents (Personal
+      // Hub etc.) call `/mcp/v1/tools/{list,call}`. Must be forwarded to
+      // Django just like /api/*, otherwise requests fall through to Next
+      // which has no matching route and returns a 404 HTML page.
+      { source: "/mcp/v1/:path*", destination: `${API}/mcp/v1/:path*` },
     ];
   },
   /**
