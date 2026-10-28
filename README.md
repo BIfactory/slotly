@@ -112,6 +112,12 @@ cd backend
 .venv/bin/python ../scripts/smoke_browser.py
 ```
 
+## MCP API
+
+Slotly exposes a [Model Context Protocol](https://spec.modelcontextprotocol.io/specification/2024-11-05/) endpoint so AI assistants can query scheduling data on behalf of authenticated users.
+
+See [`docs/mcp-api.md`](./docs/mcp-api.md) for the full reference: authentication, rate limits, error shapes, tool catalog with curl examples, and client configuration.
+
 ## Status
 
 MVP feature-complete. Tracking branch on https://github.com/hulinl/slotly. Production deploy is the last milestone.
