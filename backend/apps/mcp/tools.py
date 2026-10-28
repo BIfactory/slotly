@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from django.db import models
+
 Handler = Callable[[Any, dict], dict]  # (user: User, params: dict) -> dict
 
 TOOL_SCOPES = ("list_teams", "list_members", "find_slots", "check_time")
@@ -52,7 +54,32 @@ def list_tools() -> list[ToolDefinition]:
     input_schema={"type": "object", "properties": {}, "additionalProperties": False},
 )
 def list_teams(user, params):
-    return {"teams": []}  # dummy — T4 replaces
+    from apps.teams.models import Team, Membership  # import inside to avoid app-load loops
+
+    team_ids = list(
+        Membership.objects.filter(user=user).values_list("team_id", flat=True)
+    )
+    teams = Team.objects.filter(pk__in=team_ids).order_by("name")
+
+    # One extra query, aggregated — avoids N+1.
+    counts = dict(
+        Membership.objects
+        .filter(team_id__in=team_ids)
+        .values_list("team_id")
+        .annotate(c=models.Count("id"))
+    )
+
+    return {
+        "teams": [
+            {
+                "id": t.pk,
+                "name": t.name,
+                "description": t.description,
+                "member_count": counts.get(t.pk, 0),
+            }
+            for t in teams
+        ],
+    }
 
 
 @register_tool(
@@ -66,7 +93,45 @@ def list_teams(user, params):
     },
 )
 def list_members(user, params):
-    return {"members": []}  # dummy — T4 replaces
+    from django.conf import settings
+    from apps.teams.models import Team, Membership
+    from rest_framework.exceptions import ValidationError, PermissionDenied
+
+    team_id = params.get("team_id")
+    if not isinstance(team_id, int):
+        raise ValidationError({"team_id": "must be an integer"})
+
+    try:
+        team = Team.objects.get(pk=team_id)
+    except Team.DoesNotExist:
+        raise ValidationError({"team_id": "team not found"})
+
+    if not Membership.objects.filter(team=team, user=user).exists():
+        raise PermissionDenied({"team_id": "you are not a member of this team"})
+
+    tz = settings.TIME_ZONE
+    rows = Membership.objects.filter(team=team).select_related("user").order_by(
+        "user__first_name", "user__last_name", "user__email",
+    )
+
+    def _display_name(u):
+        full = f"{u.first_name} {u.last_name}".strip()
+        return full or u.email
+
+    return {
+        "team_id": team.pk,
+        "members": [
+            {
+                "id": m.user_id,
+                "email": m.user.email,
+                "display_name": _display_name(m.user),
+                "timezone": tz,
+                "working_hours": m.user.working_hours,
+                "role": m.role,
+            }
+            for m in rows
+        ],
+    }
 
 
 @register_tool(

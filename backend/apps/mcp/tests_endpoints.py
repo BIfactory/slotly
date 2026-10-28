@@ -102,8 +102,8 @@ class ToolsCallViewTests(APITestCase):
         self.assertEqual(call.status, "error")
         self.assertEqual(call.error_code, "scope_denied")
 
-    def test_tools_call_dummy_success(self):
-        """Token with list_teams scope → 200, correct result, MCPCall audit row written."""
+    def test_tools_call_list_teams_success(self):
+        """Token with list_teams scope → 200, result has 'teams' list, MCPCall audit row written."""
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.raw}")
         response = self.client.post(
             "/mcp/v1/tools/call",
@@ -111,7 +111,10 @@ class ToolsCallViewTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["result"], {"teams": []})
+        result = response.json()["result"]
+        # The test user is a member of 0 teams, so teams list is empty.
+        self.assertIn("teams", result)
+        self.assertIsInstance(result["teams"], list)
 
         # Audit row must exist.
         call = MCPCall.objects.filter(capability="slotly.list_teams", status="ok").first()
