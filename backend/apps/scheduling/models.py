@@ -337,7 +337,7 @@ class WriteCalendarDefault(models.Model):
     class Meta:
         constraints = [
             CheckConstraint(
-                check=(
+                condition=(
                     Q(google_account__isnull=False) & Q(microsoft_account__isnull=True)
                 )
                 | (
