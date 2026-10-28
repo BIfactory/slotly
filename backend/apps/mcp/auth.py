@@ -53,17 +53,29 @@ class MCPTokenAuthentication(BaseAuthentication):
         return "Bearer realm=\"mcp\""
 
 
+# Scope aliases: suffix in tool name → scope string stored in token.scopes.
+# Keeps the UI from exposing three near-identical checkboxes.
+# F15-R4: create_booking scope covers all three write-booking tools.
+_SCOPE_ALIASES: dict[str, str] = {
+    "create_booking": "create_booking",
+    "update_booking": "create_booking",
+    "cancel_booking": "create_booking",
+}
+
+
 def has_scope(token: APIToken, capability: str) -> bool:
     """Check whether *token* covers *capability*.
 
     *capability* arrives in ``slotly.*`` form (e.g. ``"slotly.list_teams"``).
     The ``slotly.`` prefix is stripped before comparing to token.scopes per
-    ledger ruling R1.
+    ledger ruling R1. Scope aliases allow a single scope entry to cover
+    multiple related tools (e.g. ``create_booking`` covers update/cancel too).
     """
-    short = capability.removeprefix("slotly.")
+    suffix = capability.removeprefix("slotly.")
+    required = _SCOPE_ALIASES.get(suffix, suffix)
     if "*" in token.scopes:
         return True
-    return short in token.scopes
+    return required in token.scopes
 
 
 class MCPScope(BasePermission):

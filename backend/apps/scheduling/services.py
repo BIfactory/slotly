@@ -186,7 +186,10 @@ def create_booking(
             mt = MeetingType.objects.get(pk=meeting_type_id, host=host_user, is_active=True)
             resolved_title = mt.name
         except MeetingType.DoesNotExist:
-            raise ValidationError({"meeting_type_id": "Unknown or inactive meeting type."})
+            raise ValidationError({
+                "meeting_type_id": "Unknown or inactive meeting type.",
+                "code": "meeting_type_inactive",
+            })
     else:
         mt = None
         resolved_title = _default_title(attendees[0]) if len(attendees) == 1 else "Group meeting"
