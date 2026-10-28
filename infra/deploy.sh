@@ -200,16 +200,93 @@ smoke() {
   echo
 }
 
+# ---------------------------------------------------------------------------
+# ms-oauth-env — set / rotate Microsoft OAuth secrets in Container App
+#
+# Reads infra/.secrets/microsoft_oauth (three-line format):
+#   MICROSOFT_OAUTH_CLIENT_ID=<appId>
+#   MICROSOFT_OAUTH_CLIENT_SECRET=<secret>
+#   MICROSOFT_OAUTH_SECRET_EXPIRES_AT=<endDateTime>
+#
+# Run after initial registration (Task 1) and again on secret rotation.
+# ---------------------------------------------------------------------------
+ms_oauth_env() {
+  local secrets_file="$SECRETS/microsoft_oauth"
+  if [[ ! -f "$secrets_file" ]]; then
+    echo "ERROR: $secrets_file not found." >&2
+    echo "  Run Task 1 (Azure AD app registration) first and save secrets." >&2
+    exit 1
+  fi
+
+  # Read values from the secrets file
+  local client_id client_secret
+  client_id=$(grep '^MICROSOFT_OAUTH_CLIENT_ID=' "$secrets_file" | cut -d= -f2-)
+  client_secret=$(grep '^MICROSOFT_OAUTH_CLIENT_SECRET=' "$secrets_file" | cut -d= -f2-)
+
+  if [[ -z "$client_id" || -z "$client_secret" ]]; then
+    echo "ERROR: $secrets_file is missing MICROSOFT_OAUTH_CLIENT_ID or MICROSOFT_OAUTH_CLIENT_SECRET" >&2
+    exit 1
+  fi
+
+  local backend_name
+  backend_name=$(_outputs | jq -r '.backendName.value')
+
+  echo "==> Setting Microsoft OAuth secrets on Container App ($backend_name)..."
+  az containerapp secret set \
+    --resource-group "$RG" \
+    --name "$backend_name" \
+    --secrets \
+      "microsoft-client-id=$client_id" \
+      "microsoft-client-secret=$client_secret"
+
+  echo "==> Binding secrets to env vars and setting redirect URI..."
+  az containerapp update \
+    --resource-group "$RG" \
+    --name "$backend_name" \
+    --set-env-vars \
+      "MICROSOFT_OAUTH_CLIENT_ID=secretref:microsoft-client-id" \
+      "MICROSOFT_OAUTH_CLIENT_SECRET=secretref:microsoft-client-secret" \
+      "MICROSOFT_OAUTH_REDIRECT_URI=https://api.slotly.team/api/oauth/microsoft/callback" \
+    --query "properties.template.containers[0].env[?contains(name, 'MICROSOFT')]" -o json
+
+  echo "==> Verifying env vars on live revision..."
+  az containerapp show \
+    --resource-group "$RG" \
+    --name "$backend_name" \
+    --query "properties.template.containers[0].env[?contains(name, 'MICROSOFT')]" -o json
+
+  echo
+  echo "==> Smoke test (expect 302 → login.microsoftonline.com, not 503)..."
+  local backend_fqdn
+  backend_fqdn=$(_outputs | jq -r '.backendFqdn.value')
+  local http_status
+  http_status=$(curl -so /dev/null -w '%{http_code}' "https://$backend_fqdn/api/oauth/microsoft/start" || true)
+  if [[ "$http_status" == "302" || "$http_status" == "401" || "$http_status" == "403" ]]; then
+    echo "  OK — /api/oauth/microsoft/start returned $http_status (expected: 302|401|403, not 503)"
+  elif [[ "$http_status" == "503" ]]; then
+    echo "  FAIL — 503 means env vars are not yet active in the running revision" >&2
+    echo "  Wait ~30s for Container App revision to restart, then re-run." >&2
+    exit 1
+  else
+    echo "  NOTE — unexpected status $http_status (may be normal during restart, re-check manually)"
+  fi
+
+  echo
+  echo "✓ Microsoft OAuth env vars set. New Container App revision will start automatically."
+  echo "  Verify with: curl -sI https://api.slotly.team/api/oauth/microsoft/start"
+}
+
 usage() {
   cat <<USAGE
 Slotly deploy orchestrator. Subcommands:
 
-  provision   one-time: register providers, create RG, deploy Bicep
-  build       docker buildx + push to ACR
-  release     update Container App revision to the latest pushed image
-  migrate     run manage.py migrate + createcachetable in the live container
-  logs        tail backend logs
-  smoke       hit /healthz on the live URL
+  provision      one-time: register providers, create RG, deploy Bicep
+  build          docker buildx + push to ACR
+  release        update Container App revision to the latest pushed image
+  migrate        run manage.py migrate + createcachetable in the live container
+  logs           tail backend logs
+  smoke          hit /healthz on the live URL
+  ms-oauth-env   set / rotate Microsoft OAuth secrets in Container App
 
 Environment overrides:
   SLOTLY_RG, SLOTLY_LOCATION, SLOTLY_GITHUB_REPO, SLOTLY_GITHUB_BRANCH,
@@ -226,5 +303,6 @@ case "$cmd" in
   migrate) migrate ;;
   logs) logs ;;
   smoke) smoke ;;
+  ms-oauth-env) ms_oauth_env ;;
   *) usage; exit 1 ;;
 esac
