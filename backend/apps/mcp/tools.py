@@ -710,7 +710,10 @@ def create_event(user, params):
         if len(attendee_emails) > 50:
             raise ValidationError({"attendee_emails": "max 50 attendees"})
         for e in attendee_emails:
-            if not isinstance(e, str) or "@" not in e:
+            if not isinstance(e, str):
+                raise ValidationError({"attendee_emails": f"invalid email: {e!r}"})
+            local, sep, domain = e.partition("@")
+            if not sep or not local or not domain or "@" in domain:
                 raise ValidationError({"attendee_emails": f"invalid email: {e!r}"})
 
     return _svc_create_event(

@@ -272,14 +272,36 @@ class CreateEventTests(APITestCase):
 
     # 13
     def test_create_event_invalid_email(self):
-        """attendee_emails with an invalid value → 400 validation_error."""
+        """attendee_emails with various invalid values → 400 validation_error."""
         start_iso, end_iso = _future_slot()
-        resp = self._call({
-            "start": start_iso,
-            "end": end_iso,
-            "title": "Bad email",
-            "attendee_emails": ["not-an-email"],
-        })
+        bad_emails = [
+            ["not-an-email"],   # original case: no @ at all
+            ["@"],              # both local and domain empty
+            ["x@"],             # domain missing
+            ["@y"],             # local missing
+            ["a@b@c"],          # multiple @
+        ]
+        for emails in bad_emails:
+            with self.subTest(emails=emails):
+                resp = self._call({
+                    "start": start_iso,
+                    "end": end_iso,
+                    "title": "Bad email",
+                    "attendee_emails": emails,
+                })
+                self.assertEqual(resp.status_code, 400)
+                self.assertEqual(resp.json()["error"], "validation_error")
+
+    # 13b
+    def test_create_event_title_too_long(self):
+        """title longer than 200 chars → 400 validation_error."""
+        start_iso, end_iso = _future_slot()
+        with patch("apps.scheduling.services._pick_write_provider", return_value=_mock_provider()):
+            resp = self._call({
+                "start": start_iso,
+                "end": end_iso,
+                "title": "x" * 201,
+            })
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"], "validation_error")
 
