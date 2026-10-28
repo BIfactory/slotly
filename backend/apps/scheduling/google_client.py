@@ -145,17 +145,45 @@ class _Credentials:
     expires_at: datetime
 
 
-def get_credentials(user, *, refresh_grace: timedelta = timedelta(seconds=60)) -> _Credentials:
+def get_credentials(
+    user,
+    account_id: int | None = None,
+    *,
+    refresh_grace: timedelta = timedelta(seconds=60),
+) -> _Credentials:
     """
     Resolve a usable access token for ``user``. Refreshes the stored token
     via Google when within ``refresh_grace`` of expiry, persisting the new
-    access_token + expires_at in the DB. Raises if no GoogleAccount or if
-    the refresh was rejected (caller should delete the row + reconnect).
+    access_token + expires_at in the DB.
+
+    If ``account_id`` is given, loads that specific GoogleAccount (must
+    belong to ``user``).  If ``None``, reads the user's WriteCalendarDefault;
+    if none exists or default is not Google, raises GoogleOAuthError (same
+    shape as the old GoogleAccount.DoesNotExist path so existing callers'
+    error handling still fires).
     """
-    try:
-        account = GoogleAccount.objects.get(user=user)
-    except GoogleAccount.DoesNotExist as exc:
-        raise GoogleOAuthError("user has no connected Google account") from exc
+    from .models import WriteCalendarDefault  # local import — avoids circular
+
+    if account_id is not None:
+        try:
+            account = GoogleAccount.objects.get(pk=account_id, user=user)
+        except GoogleAccount.DoesNotExist as exc:
+            raise GoogleOAuthError("Google account not found") from exc
+    else:
+        default = (
+            WriteCalendarDefault.objects
+            .select_related("google_account")
+            .filter(user=user)
+            .first()
+        )
+        if default is not None and default.google_account_id is not None:
+            account = default.google_account
+        else:
+            # Fall back to any connected account so the existing single-account
+            # path still works for users who have one account but no explicit default.
+            account = GoogleAccount.objects.filter(user=user).first()
+            if account is None:
+                raise GoogleOAuthError("user has no connected Google account")
 
     if account.expires_at > djtz.now() + refresh_grace:
         return _Credentials(
@@ -199,15 +227,18 @@ class GoogleApiError(RuntimeError):
         self.status = status
 
 
-def list_writable_calendars(user) -> list[dict]:
+def list_writable_calendars(user, account: "GoogleAccount | None" = None) -> list[dict]:
     """
     Returns the user's calendarList entries filtered to ones we can write
     events into (accessRole owner or writer). Each item: {id, summary,
     primary, accessRole, timeZone}. Empty list is a valid result — the user
     is connected but has no writable calendars, so booking should be
     disabled until they grant access to one.
+
+    When ``account`` is given, uses that specific GoogleAccount's credentials.
+    Otherwise falls back to the default/first account (legacy behaviour).
     """
-    creds = get_credentials(user)
+    creds = get_credentials(user, account.id if account is not None else None)
     with bearer_session(creds) as client:
         r = client.get("/calendar/v3/users/me/calendarList")
     if r.status_code != 200:
@@ -238,6 +269,7 @@ def create_calendar_event(
     attendees: list[str],
     include_online_meeting: bool = True,
     location: str = "",
+    account_id: int | None = None,
 ) -> dict:
     """
     Create an event on ``calendar_id`` on behalf of ``user`` and email an
@@ -252,6 +284,9 @@ def create_calendar_event(
 
     Times must be ISO 8601 datetimes. ``time_zone`` is the IANA name that
     Google displays alongside — pass the user's app TZ for consistency.
+
+    ``account_id``, when provided, selects a specific GoogleAccount row so
+    multi-account users hit the right token.
     """
     import uuid as _uuid
 
@@ -279,7 +314,7 @@ def create_calendar_event(
         }
         params["conferenceDataVersion"] = "1"
 
-    creds = get_credentials(user)
+    creds = get_credentials(user, account_id)
     with bearer_session(creds) as client:
         r = client.post(
             f"/calendar/v3/calendars/{calendar_id}/events",
@@ -291,11 +326,20 @@ def create_calendar_event(
     return r.json()
 
 
-def delete_calendar_event(user, *, calendar_id: str, event_id: str) -> None:
+def delete_calendar_event(
+    user,
+    *,
+    calendar_id: str,
+    event_id: str,
+    account_id: int | None = None,
+) -> None:
     """Delete an event and notify attendees. Treats 404/410 as success —
     the event was already gone (deleted from Google directly or expired),
-    which is the state the caller wanted."""
-    creds = get_credentials(user)
+    which is the state the caller wanted.
+
+    ``account_id`` selects a specific GoogleAccount for multi-account users.
+    """
+    creds = get_credentials(user, account_id)
     with bearer_session(creds) as client:
         r = client.delete(
             f"/calendar/v3/calendars/{calendar_id}/events/{event_id}",

@@ -157,11 +157,39 @@ class _Credentials:
     expires_at: datetime
 
 
-def get_credentials(user, *, refresh_grace: timedelta = timedelta(seconds=60)) -> _Credentials:
-    try:
-        account = MicrosoftAccount.objects.get(user=user)
-    except MicrosoftAccount.DoesNotExist as exc:
-        raise MicrosoftOAuthError("user has no connected Microsoft account") from exc
+def get_credentials(
+    user,
+    account_id: int | None = None,
+    *,
+    refresh_grace: timedelta = timedelta(seconds=60),
+) -> _Credentials:
+    """
+    Resolve a usable Microsoft access token for ``user``.
+
+    If ``account_id`` is given, loads that specific MicrosoftAccount.
+    If ``None``, reads WriteCalendarDefault; falls back to any connected
+    account so existing single-account callers still work.
+    """
+    from .models import WriteCalendarDefault  # local import — avoids circular
+
+    if account_id is not None:
+        try:
+            account = MicrosoftAccount.objects.get(pk=account_id, user=user)
+        except MicrosoftAccount.DoesNotExist as exc:
+            raise MicrosoftOAuthError("Microsoft account not found") from exc
+    else:
+        default = (
+            WriteCalendarDefault.objects
+            .select_related("microsoft_account")
+            .filter(user=user)
+            .first()
+        )
+        if default is not None and default.microsoft_account_id is not None:
+            account = default.microsoft_account
+        else:
+            account = MicrosoftAccount.objects.filter(user=user).first()
+            if account is None:
+                raise MicrosoftOAuthError("user has no connected Microsoft account")
 
     if account.expires_at > djtz.now() + refresh_grace:
         return _Credentials(
@@ -195,11 +223,16 @@ def _bearer(creds: _Credentials) -> httpx.Client:
     )
 
 
-def list_writable_calendars(user) -> list[dict]:
+def list_writable_calendars(user, account: "MicrosoftAccount | None" = None) -> list[dict]:
     """Return the user's calendars we can write to (canEdit=true). Each
     item mirrors the Google shape so the settings dropdown treats both
-    the same: {id, summary, primary, access_role, time_zone}."""
-    creds = get_credentials(user)
+    the same: {id, summary, primary, access_role, time_zone}.
+
+    When ``account`` is given, uses that specific MicrosoftAccount's
+    credentials. Otherwise falls back to the default/first account (legacy
+    behaviour).
+    """
+    creds = get_credentials(user, account.id if account is not None else None)
     with _bearer(creds) as client:
         r = client.get("/me/calendars")
     if r.status_code != 200:
@@ -231,12 +264,16 @@ def create_calendar_event(
     attendees: list[str],
     include_online_meeting: bool = True,
     location: str = "",
+    account_id: int | None = None,
 ) -> dict:
     """Create an event on ``calendar_id`` (empty = primary calendar) and
     invite ``attendees``. When ``include_online_meeting`` is True (the
     "always online" default), Graph auto-generates a Teams meeting link.
     Graph sends the invite email automatically for events with attendees —
-    no ``sendUpdates`` equivalent needed."""
+    no ``sendUpdates`` equivalent needed.
+
+    ``account_id`` selects a specific MicrosoftAccount for multi-account users.
+    """
     payload: dict = {
         "subject": summary,
         "body": {
@@ -266,7 +303,7 @@ def create_calendar_event(
         payload["onlineMeetingProvider"] = "teamsForBusiness"
 
     endpoint = "/me/events" if not calendar_id else f"/me/calendars/{calendar_id}/events"
-    creds = get_credentials(user)
+    creds = get_credentials(user, account_id)
     with _bearer(creds) as client:
         r = client.post(endpoint, json=payload)
     if r.status_code not in (200, 201):
@@ -274,11 +311,20 @@ def create_calendar_event(
     return r.json()
 
 
-def delete_calendar_event(user, *, calendar_id: str, event_id: str) -> None:
+def delete_calendar_event(
+    user,
+    *,
+    calendar_id: str,
+    event_id: str,
+    account_id: int | None = None,
+) -> None:
     """Delete an event via Graph. Graph auto-emails a cancellation to
-    attendees. 404 is treated as success (event already gone)."""
+    attendees. 404 is treated as success (event already gone).
+
+    ``account_id`` selects a specific MicrosoftAccount for multi-account users.
+    """
     endpoint = f"/me/events/{event_id}"  # /me/events works even for non-primary calendars
-    creds = get_credentials(user)
+    creds = get_credentials(user, account_id)
     with _bearer(creds) as client:
         r = client.delete(endpoint)
     if r.status_code in (200, 204, 404):

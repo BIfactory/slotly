@@ -74,10 +74,11 @@ export class ReconnectRequiredError extends Error {
   }
 }
 
-export async function getWritableCalendars(): Promise<WritableCalendar[]> {
-  const res = await fetch("/api/google-account/writable-calendars", {
-    credentials: "include",
-  });
+export async function getWritableCalendars(accountId?: string): Promise<WritableCalendar[]> {
+  const url = accountId
+    ? `/api/google-account/writable-calendars?account_id=${encodeURIComponent(accountId)}`
+    : "/api/google-account/writable-calendars";
+  const res = await fetch(url, { credentials: "include" });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as {
       detail?: string;
@@ -455,10 +456,11 @@ export async function setMicrosoftWriteCalendar(
   return (await res.json()) as MicrosoftAccountStatus;
 }
 
-export async function getMicrosoftWritableCalendars(): Promise<WritableCalendar[]> {
-  const res = await fetch("/api/microsoft-account/writable-calendars", {
-    credentials: "include",
-  });
+export async function getMicrosoftWritableCalendars(accountId?: string): Promise<WritableCalendar[]> {
+  const url = accountId
+    ? `/api/microsoft-account/writable-calendars?account_id=${encodeURIComponent(accountId)}`
+    : "/api/microsoft-account/writable-calendars";
+  const res = await fetch(url, { credentials: "include" });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { detail?: string };
     throw new Error(body.detail ?? `HTTP ${res.status}`);
