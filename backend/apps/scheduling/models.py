@@ -366,3 +366,76 @@ class WriteCalendarDefault(models.Model):
 
     def __str__(self) -> str:
         return f"WriteCalendarDefault(user={self.user_id}, provider={self.provider})"
+
+
+class OAuthBusyWindow(models.Model):
+    """Busy interval harvested from a connected OAuth account's calendars
+    via Google freebusy / MS Graph getSchedule.
+
+    Privacy: starts_at + ends_at only. Never title, description, location,
+    attendees. Any addition must trigger a privacy review (PRD §5.2, F15-R9).
+
+    Transparent events (Google: transparency=transparent) are NOT included —
+    the Google freebusy API only returns opaque (blocking) events. All-day
+    events that are transparent are therefore also excluded; this differs
+    from the ICS pipeline which treats all-day as always busy. This semantic
+    drift is intentional — see docs/oauth-busy.md.
+
+    Nullable FKs because a user has either a GoogleAccount OR a MicrosoftAccount
+    rooting a given row — but never both. The `provider` field is the discriminator.
+    """
+
+    PROVIDER_CHOICES = [("google", "Google"), ("microsoft", "Microsoft")]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="oauth_busy_windows",
+    )
+    provider = models.CharField(max_length=16, choices=PROVIDER_CHOICES)
+    google_account = models.ForeignKey(
+        "GoogleAccount",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="busy_windows",
+    )
+    microsoft_account = models.ForeignKey(
+        "MicrosoftAccount",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="busy_windows",
+    )
+    calendar_id = models.CharField(max_length=1024)
+    starts_at = models.DateTimeField()
+    ends_at = models.DateTimeField()
+    fetched_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=("user", "starts_at", "ends_at")),
+            models.Index(fields=("google_account", "fetched_at")),
+            models.Index(fields=("microsoft_account", "fetched_at")),
+        ]
+        constraints = [
+            CheckConstraint(
+                condition=(
+                    Q(google_account__isnull=False)
+                    & Q(microsoft_account__isnull=True)
+                    & Q(provider="google")
+                )
+                | (
+                    Q(google_account__isnull=True)
+                    & Q(microsoft_account__isnull=False)
+                    & Q(provider="microsoft")
+                ),
+                name="oauth_busy_window_exactly_one_provider",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"OAuthBusyWindow(user={self.user_id}, provider={self.provider},"
+            f" {self.starts_at}–{self.ends_at})"
+        )
