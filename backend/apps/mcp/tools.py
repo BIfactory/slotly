@@ -235,17 +235,17 @@ def find_slots(user, params):
     # 6. Validate window range
     if window_end <= window_start:
         raise ValidationError({"window_end": "must be after window_start"})
-    if (window_end - window_start).days > 60:
+    if (window_end - window_start) > timedelta(days=60):
         raise ValidationError({"window_end": "window cannot exceed 60 days"})
 
     # 7. Validate buffer_min and limit
     buffer_min = params.get("buffer_min", 0)
-    if not isinstance(buffer_min, int) or buffer_min < 0 or buffer_min > 240:
-        buffer_min = 0
+    if not isinstance(buffer_min, int) or isinstance(buffer_min, bool) or not (0 <= buffer_min <= 240):
+        raise ValidationError({"buffer_min": "must be an integer in [0, 240]"})
 
     limit = params.get("limit", 100)
-    if not isinstance(limit, int) or limit < 1 or limit > 500:
-        limit = 100
+    if not isinstance(limit, int) or isinstance(limit, bool) or not (1 <= limit <= 500):
+        raise ValidationError({"limit": "must be an integer in [1, 500]"})
 
     # 8. Fetch working hours
     users = _User.objects.filter(pk__in=member_ids)

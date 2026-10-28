@@ -129,17 +129,30 @@ class FindSlotsTests(APITestCase):
     # ------------------------------------------------------------------
 
     def test_find_slots_subset_of_members(self):
-        """Passing member_ids=[alice, bob] works; count same as full when no events."""
-        resp = self._call({
+        """Passing member_ids=[alice, bob] gives same count as full team (no events)."""
+        # Full-team count
+        resp_full = self._call({
+            "team_id": self.team.pk,
+            "duration_min": 60,
+            "window_start": MON_START,
+            "window_end": MON_END,
+        })
+        self.assertEqual(resp_full.status_code, 200)
+        full_count = resp_full.json()["result"]["count"]
+
+        # Subset count
+        resp_sub = self._call({
             "team_id": self.team.pk,
             "duration_min": 60,
             "member_ids": [self.alice.pk, self.bob.pk],
             "window_start": MON_START,
             "window_end": MON_END,
         })
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()["result"]
-        self.assertGreater(data["count"], 0)
+        self.assertEqual(resp_sub.status_code, 200)
+        sub_count = resp_sub.json()["result"]["count"]
+
+        self.assertGreater(sub_count, 0)
+        self.assertEqual(sub_count, full_count)
 
     # ------------------------------------------------------------------
     # 4. duration_min too short
@@ -547,3 +560,112 @@ class FindSlotsTests(APITestCase):
         body = resp.json()
         self.assertEqual(body["error"], "validation_error")
         self.assertIn("team_id", body["detail"])
+
+    # ------------------------------------------------------------------
+    # Fix-round: window boundary — exactly 60 days must be allowed
+    # ------------------------------------------------------------------
+
+    def test_find_slots_window_exactly_60_days_allowed(self):
+        """A window of exactly 60 days must not be rejected."""
+        from datetime import datetime, timezone as dt_timezone, timedelta as td
+        start = datetime(2026, 7, 6, 8, 0, 0, tzinfo=CEST)
+        end = start + td(days=60)
+        resp = self._call({
+            "team_id": self.team.pk,
+            "duration_min": 60,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+        })
+        self.assertEqual(resp.status_code, 200)
+
+    # ------------------------------------------------------------------
+    # Fix-round: window boundary — 60 days + 1 second must be rejected
+    # ------------------------------------------------------------------
+
+    def test_find_slots_window_boundary_60_days_plus_one_second(self):
+        """A window of 60 days + 1 second must be rejected with 400."""
+        from datetime import datetime, timezone as dt_timezone, timedelta as td
+        start = datetime(2026, 7, 6, 8, 0, 0, tzinfo=CEST)
+        end = start + td(days=60, seconds=1)
+        resp = self._call({
+            "team_id": self.team.pk,
+            "duration_min": 60,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+        })
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body["error"], "validation_error")
+        self.assertIn("window_end", body["detail"])
+
+    # ------------------------------------------------------------------
+    # Fix-round: buffer_min too large → 400
+    # ------------------------------------------------------------------
+
+    def test_find_slots_buffer_min_too_large(self):
+        """buffer_min=300 (> 240 max) must return 400."""
+        resp = self._call({
+            "team_id": self.team.pk,
+            "duration_min": 60,
+            "buffer_min": 300,
+            "window_start": MON_START,
+            "window_end": MON_END,
+        })
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body["error"], "validation_error")
+        self.assertIn("buffer_min", body["detail"])
+
+    # ------------------------------------------------------------------
+    # Fix-round: buffer_min negative → 400
+    # ------------------------------------------------------------------
+
+    def test_find_slots_buffer_min_negative(self):
+        """buffer_min=-1 must return 400."""
+        resp = self._call({
+            "team_id": self.team.pk,
+            "duration_min": 60,
+            "buffer_min": -1,
+            "window_start": MON_START,
+            "window_end": MON_END,
+        })
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body["error"], "validation_error")
+        self.assertIn("buffer_min", body["detail"])
+
+    # ------------------------------------------------------------------
+    # Fix-round: limit=0 → 400
+    # ------------------------------------------------------------------
+
+    def test_find_slots_limit_zero(self):
+        """limit=0 (< 1 min) must return 400."""
+        resp = self._call({
+            "team_id": self.team.pk,
+            "duration_min": 60,
+            "limit": 0,
+            "window_start": MON_START,
+            "window_end": MON_END,
+        })
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body["error"], "validation_error")
+        self.assertIn("limit", body["detail"])
+
+    # ------------------------------------------------------------------
+    # Fix-round: limit too large → 400
+    # ------------------------------------------------------------------
+
+    def test_find_slots_limit_too_large(self):
+        """limit=501 (> 500 max) must return 400."""
+        resp = self._call({
+            "team_id": self.team.pk,
+            "duration_min": 60,
+            "limit": 501,
+            "window_start": MON_START,
+            "window_end": MON_END,
+        })
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body["error"], "validation_error")
+        self.assertIn("limit", body["detail"])
