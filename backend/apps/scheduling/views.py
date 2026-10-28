@@ -51,6 +51,7 @@ from .services import (
     _default_title,
     _extract_meet_link,
     _first_busy_user,
+    _mail_visitor_host_cancellation,
     _manage_url,
     _notify_booking_rescheduled,
 )
@@ -1595,52 +1596,6 @@ class HostBookingCancelView(APIView):
 
         _mail_visitor_host_cancellation(booking, reason)
         return Response(_serialize_host_booking(booking))
-
-
-def _mail_visitor_host_cancellation(booking: Booking, reason: str) -> None:
-    """Branded HTML/text email to the visitor when the host cancels.
-    Duplicated in services.py for use by cancel_booking service function."""
-    from django.conf import settings as _settings
-    from django.core.mail import EmailMultiAlternatives
-
-    from apps.notifications.emails import blockquote, html_shell, kv_rows, paragraph
-
-    when = booking.start_at.strftime("%A %d %B, %H:%M")
-    host_name = f"{booking.host.first_name} {booking.host.last_name}".strip() or booking.host.email
-    subject = f"{host_name} cancelled your meeting on {when}"
-
-    text_body = (
-        f"Hi {booking.visitor_name or 'there'},\n\n"
-        f"{host_name} had to cancel your meeting on {when}."
-    )
-    if reason:
-        text_body += f"\n\nNote from {host_name}:\n{reason}"
-
-    intro = paragraph(f"Hi {booking.visitor_name or 'there'},")
-    intro += paragraph(f"{host_name} had to cancel your meeting.")
-    intro += kv_rows([("When", when), ("Where", booking.location)])
-    if reason:
-        intro += paragraph(f"Note from {host_name}:")
-        intro += blockquote(reason)
-
-    html_body = html_shell(
-        title=f"{host_name} cancelled your meeting",
-        intro_html=intro,
-        cta_label="Pick another slot",
-        cta_url=f"{_settings.FRONTEND_BASE_URL.rstrip('/')}/u/{booking.host.share_token}",
-    )
-
-    try:
-        msg = EmailMultiAlternatives(
-            subject=f"[Slotly] {subject}",
-            body=text_body,
-            from_email=_settings.DEFAULT_FROM_EMAIL,
-            to=[booking.visitor_email],
-        )
-        msg.attach_alternative(html_body, "text/html")
-        msg.send(fail_silently=True)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("host-cancel mail to visitor failed for %s: %s", booking.uuid, exc)
 
 
 class HostBookingListView(APIView):

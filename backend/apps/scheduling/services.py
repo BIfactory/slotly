@@ -432,6 +432,8 @@ def update_booking(
     else:
         # Title-only change — no provider interaction needed.
         booking.title = new_title
+        # Title-only edit doesn't move the time → no reminder reset. (The
+        # time-change path above sets reminded_at=None.)
         booking.save(update_fields=["title"])
 
         return {
