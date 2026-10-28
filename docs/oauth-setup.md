@@ -178,3 +178,10 @@ dostupný) pro zpětnou kompatibilitu.
 | MS 401 při list_calendars s corporate účtem | Admin consent chybí — v Azure Portal Grant admin consent |
 | Meet link chybí v pozvánce | Chybí scope `calendar.events` — user musí Reconnect |
 | Teams link chybí | Osobní outlook.com účty nedostávají Teams — funkční jen pro work/school |
+
+## OAuth-driven busy intervals
+
+Připojený OAuth účet automaticky vystavuje **všechny** calendary jako busy zdroje —
+bez nutnosti ručně přidávat ICS URL. Polling probíhá každých 5 minut.
+
+Podrobnosti o implementaci, privacy modelu a sémantickém driftu viz [`docs/oauth-busy.md`](oauth-busy.md).
