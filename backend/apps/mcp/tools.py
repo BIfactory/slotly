@@ -7,7 +7,7 @@ from django.db import models
 
 Handler = Callable[[Any, dict], dict]  # (user: User, params: dict) -> dict
 
-TOOL_SCOPES = ("list_teams", "list_members", "find_slots", "check_time", "create_booking")
+TOOL_SCOPES = ("list_teams", "list_members", "find_slots", "check_time", "create_booking", "write_event")
 
 # Scope display definitions for Settings UI (T5). The ORDER is the UI order.
 TOKEN_SCOPE_UI = [
@@ -16,6 +16,7 @@ TOKEN_SCOPE_UI = [
     {"name": "find_slots", "label": "Find free slots", "group": "read"},
     {"name": "check_time", "label": "Check specific time", "group": "read"},
     {"name": "create_booking", "label": "Create / update / cancel bookings", "group": "write"},
+    {"name": "write_event", "label": "Write bare calendar events", "group": "write"},
 ]
 
 
@@ -653,4 +654,70 @@ def cancel_booking(user, params):
         host_user=user,
         booking_uuid=booking_uuid,
         reason=reason,
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Bare event write handler (T4)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+@register_tool(
+    "slotly.create_event",
+    description="Zapíše bare kalendářový event (bez Booking) do hostova kalendáře. Attendees volitelně.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "start": {"type": "string", "format": "date-time"},
+            "end": {"type": "string", "format": "date-time"},
+            "title": {"type": "string", "minLength": 1, "maxLength": 200},
+            "calendar_id": {
+                "type": "string",
+                "description": "Google/Graph calendar ID. Default: hostův write_calendar_id.",
+            },
+            "attendee_emails": {
+                "type": "array",
+                "items": {"type": "string", "format": "email"},
+                "maxItems": 50,
+                "description": "Volitelné. Pozvánky jdou standard provider mechanism (email).",
+            },
+        },
+        "required": ["start", "end", "title"],
+        "additionalProperties": False,
+    },
+    sensitivity="write_external",
+)
+def create_event(user, params):
+    from rest_framework.exceptions import ValidationError
+
+    from apps.scheduling.services import create_event as _svc_create_event
+
+    start = _parse_dt(params.get("start"), "start")
+    end = _parse_dt(params.get("end"), "end")
+
+    title = params.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise ValidationError({"title": "required non-empty string"})
+
+    calendar_id = params.get("calendar_id")
+    if calendar_id is not None and (not isinstance(calendar_id, str) or not calendar_id):
+        raise ValidationError({"calendar_id": "must be a non-empty string"})
+
+    attendee_emails = params.get("attendee_emails")
+    if attendee_emails is not None:
+        if not isinstance(attendee_emails, list):
+            raise ValidationError({"attendee_emails": "must be a list"})
+        if len(attendee_emails) > 50:
+            raise ValidationError({"attendee_emails": "max 50 attendees"})
+        for e in attendee_emails:
+            if not isinstance(e, str) or "@" not in e:
+                raise ValidationError({"attendee_emails": f"invalid email: {e!r}"})
+
+    return _svc_create_event(
+        host_user=user,
+        start=start,
+        end=end,
+        title=title.strip(),
+        calendar_id=calendar_id,
+        attendee_emails=attendee_emails,
     )
