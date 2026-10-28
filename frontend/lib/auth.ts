@@ -3,7 +3,7 @@
  * Reference: https://docs.allauth.org/en/latest/headless/openapi-specification/
  */
 
-import { api, type AllauthResponse } from "./api";
+import { api, refreshCsrf, type AllauthResponse } from "./api";
 import { clearMeCache } from "./me";
 
 const BASE = "/_allauth/browser/v1";
@@ -65,6 +65,9 @@ export async function signup(email: string, password: string) {
   });
   _clearSessionCache();
   clearMeCache();
+  // Django rotates the server-side CSRF on session change; re-emit the
+  // cookie so later unsafe requests send the matching token.
+  await refreshCsrf();
   return r;
 }
 
@@ -75,6 +78,7 @@ export async function login(email: string, password: string) {
   });
   _clearSessionCache();
   clearMeCache();
+  await refreshCsrf();
   return r;
 }
 
@@ -82,6 +86,7 @@ export async function logout(): Promise<AllauthResponse> {
   const r = await api(`${BASE}/auth/session`, { method: "DELETE" });
   _clearSessionCache();
   clearMeCache();
+  await refreshCsrf();
   return r;
 }
 
@@ -92,6 +97,7 @@ export async function confirmEmail(key: string) {
   });
   _clearSessionCache();
   clearMeCache();
+  await refreshCsrf();
   return r;
 }
 

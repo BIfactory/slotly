@@ -45,6 +45,25 @@ async function ensureCsrf(): Promise<void> {
   csrfSeeded = true;
 }
 
+/**
+ * Force a fresh csrftoken cookie after a session-rotating event
+ * (login / signup / confirmEmail). Django rotates the server-side CSRF
+ * token on login, but the browser cookie isn't automatically refreshed —
+ * so subsequent unsafe requests send a stale X-CSRFToken that doesn't
+ * match the new session's token, and DRF returns
+ *   "CSRF Failed: CSRF token from the 'X-Csrftoken' HTTP header incorrect."
+ * Calling the /_allauth/browser/v1/config endpoint re-emits the cookie
+ * with the current session's value.
+ */
+export async function refreshCsrf(): Promise<void> {
+  csrfSeeded = false;
+  try {
+    await fetch("/_allauth/browser/v1/config", { credentials: "include" });
+  } finally {
+    csrfSeeded = true;
+  }
+}
+
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export async function api<T = unknown>(

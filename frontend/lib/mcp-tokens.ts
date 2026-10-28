@@ -87,8 +87,8 @@ function csrfHeader(): Record<string, string> {
   return m ? { "X-CSRFToken": decodeURIComponent(m[1]) } : {};
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, {
+async function doFetch(path: string, init: RequestInit): Promise<Response> {
+  return fetch(path, {
     credentials: "include",
     ...init,
     headers: {
@@ -97,6 +97,30 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(init.headers ?? {}),
     },
   });
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let res = await doFetch(path, init);
+
+  // Recovery for a stale csrftoken cookie (e.g. the user signed in before
+  // the login/signup flow was updated to refresh CSRF explicitly, so the
+  // cookie value stored by the browser no longer matches Django's rotated
+  // session token). DRF SessionAuthentication fails these with 403 +
+  // "CSRF Failed:" detail. Fetch a fresh cookie from the allauth config
+  // endpoint and retry once.
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && res.status === 403) {
+    const peek = await res.clone().text().catch(() => "");
+    if (peek.includes("CSRF")) {
+      try {
+        await fetch("/_allauth/browser/v1/config", { credentials: "include" });
+      } catch {
+        // Ignore — fallthrough will surface the original 403 to the caller.
+      }
+      res = await doFetch(path, init);
+    }
+  }
+
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new McpTokenApiError(res.status, body);
