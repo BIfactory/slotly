@@ -128,6 +128,28 @@ class OAuthCallbackTests(TestCase):
         self.assertIn("google=error", resp["Location"])
         self.assertIn("reason=access_denied", resp["Location"])
 
+    def test_microsoft_aadsts65001_surfaces_admin_consent_required(self) -> None:
+        # Enterprise tenant with admin consent required → frontend shows IT admin message.
+        resp = self.client.get(
+            reverse("microsoft-oauth-callback"),
+            {
+                "error": "access_denied",
+                "error_description": "AADSTS65001: The user or administrator has not consented to use the application.",
+            },
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("microsoft=error", resp["Location"])
+        self.assertIn("reason=admin_consent_required", resp["Location"])
+
+    def test_microsoft_generic_error_passes_through(self) -> None:
+        resp = self.client.get(
+            reverse("microsoft-oauth-callback"),
+            {"error": "access_denied", "error_description": "User cancelled login."},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("microsoft=error", resp["Location"])
+        self.assertIn("reason=access_denied", resp["Location"])
+
     def test_successful_exchange_persists_encrypted_tokens(self) -> None:
         state = _bake_state(self.user.pk)
         with patch("apps.scheduling.views.exchange_code") as mx, patch(
