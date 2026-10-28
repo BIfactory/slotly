@@ -1,6 +1,7 @@
 """
-Tests for multi-account OAuth model layer (Task 1) and OAuth callback
-upsert + get_credentials semantics (Task 2).
+Tests for multi-account OAuth model layer (Task 1), OAuth callback upsert +
+get_credentials semantics (Task 2), and REST API + _pick_write_provider
+refactor (Task 3).
 """
 from __future__ import annotations
 
@@ -270,3 +271,289 @@ class OAuthCallbackMultiAccountTests(TestCase):
         # Passing bob's account PK with alice's user should raise.
         with self.assertRaises(GoogleOAuthError):
             get_credentials(self.user, g.pk)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: REST /api/calendar-accounts endpoints
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    GOOGLE_OAUTH_CLIENT_ID="dev-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET="dev-client-secret",
+    FRONTEND_BASE_URL="http://localhost:3000",
+    GOOGLE_OAUTH_FRONTEND_RETURN="/settings/integrations",
+)
+class CalendarAccountsAPITests(TestCase):
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.user = User.objects.create_user(email="alice@slotly.test", password="x" * 12)
+        self.other = User.objects.create_user(email="bob@slotly.test", password="x" * 12)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    # ── list ─────────────────────────────────────────────────────────────────
+
+    def test_list_returns_all_connected_accounts_both_providers(self):
+        g = _make_google(self.user, email="alice@gmail.com")
+        m = _make_microsoft(self.user, email="alice@outlook.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        resp = self.client.get("/api/calendar-accounts")
+        self.assertEqual(resp.status_code, 200)
+        accounts = resp.json()["accounts"]
+        self.assertEqual(len(accounts), 2)
+        providers = {a["provider"] for a in accounts}
+        self.assertIn("google", providers)
+        self.assertIn("microsoft", providers)
+
+    def test_list_marks_default(self):
+        g1 = _make_google(self.user, email="alice@gmail.com")
+        _make_google(self.user, email="alice.work@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g1)
+
+        resp = self.client.get("/api/calendar-accounts")
+        self.assertEqual(resp.status_code, 200)
+        accounts = resp.json()["accounts"]
+        self.assertEqual(len(accounts), 2)
+        defaults = [a for a in accounts if a["is_default"]]
+        self.assertEqual(len(defaults), 1)
+        self.assertEqual(defaults[0]["id"], f"g:{g1.pk}")
+
+    def test_list_empty_when_no_accounts(self):
+        resp = self.client.get("/api/calendar-accounts")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["accounts"], [])
+
+    def test_list_requires_auth(self):
+        from rest_framework.test import APIClient
+        anon = APIClient()
+        resp = anon.get("/api/calendar-accounts")
+        self.assertEqual(resp.status_code, 403)
+
+    # ── set-default ──────────────────────────────────────────────────────────
+
+    def test_set_default_switches_pointer(self):
+        g1 = _make_google(self.user, email="alice@gmail.com")
+        g2 = _make_google(self.user, email="alice.work@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g1)
+
+        resp = self.client.post(f"/api/calendar-accounts/g:{g2.pk}/set-default")
+        self.assertEqual(resp.status_code, 200)
+
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertEqual(wcd.google_account_id, g2.pk)
+
+    def test_set_default_other_users_account_404(self):
+        g_other = _make_google(self.other, email="bob@gmail.com")
+
+        resp = self.client.post(f"/api/calendar-accounts/g:{g_other.pk}/set-default")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_set_default_switches_provider(self):
+        g = _make_google(self.user, email="alice@gmail.com")
+        m = _make_microsoft(self.user, email="alice@outlook.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        resp = self.client.post(f"/api/calendar-accounts/m:{m.pk}/set-default")
+        self.assertEqual(resp.status_code, 200)
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertIsNone(wcd.google_account_id)
+        self.assertEqual(wcd.microsoft_account_id, m.pk)
+
+    # ── delete ───────────────────────────────────────────────────────────────
+
+    def test_delete_removes_single_account_not_others(self):
+        g1 = _make_google(self.user, email="alice@gmail.com")
+        g2 = _make_google(self.user, email="alice.work@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g1)
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g2.pk}")
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(
+            __import__("apps.scheduling.models", fromlist=["GoogleAccount"])
+            .GoogleAccount.objects.filter(pk=g2.pk).exists()
+        )
+        # g1 still exists
+        self.assertTrue(
+            __import__("apps.scheduling.models", fromlist=["GoogleAccount"])
+            .GoogleAccount.objects.filter(pk=g1.pk).exists()
+        )
+
+    def test_delete_default_promotes_another_account(self):
+        from apps.scheduling.models import GoogleAccount
+
+        g1 = _make_google(self.user, email="alice@gmail.com")
+        g2 = _make_google(self.user, email="alice.work@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g1)
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g1.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        # g1 is gone
+        self.assertFalse(GoogleAccount.objects.filter(pk=g1.pk).exists())
+        # default now points at g2
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertEqual(wcd.google_account_id, g2.pk)
+
+    def test_delete_only_account_wipes_default(self):
+        g = _make_google(self.user, email="alice@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        self.assertFalse(WriteCalendarDefault.objects.filter(user=self.user).exists())
+
+    def test_delete_other_users_account_returns_404(self):
+        g_other = _make_google(self.other, email="bob@gmail.com")
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g_other.pk}")
+        self.assertEqual(resp.status_code, 404)
+
+    # ── patch write_calendar_id ───────────────────────────────────────────────
+
+    def test_patch_write_calendar_id(self):
+        g = _make_google(self.user, email="alice@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        resp = self.client.patch(
+            f"/api/calendar-accounts/g:{g.pk}",
+            {"write_calendar_id": "cal-abc"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        g.refresh_from_db()
+        self.assertEqual(g.write_calendar_id, "cal-abc")
+
+    def test_patch_write_calendar_id_microsoft(self):
+        m = _make_microsoft(self.user, email="alice@outlook.com")
+        WriteCalendarDefault.objects.create(user=self.user, microsoft_account=m)
+
+        resp = self.client.patch(
+            f"/api/calendar-accounts/m:{m.pk}",
+            {"write_calendar_id": "ms-cal-id"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        m.refresh_from_db()
+        self.assertEqual(m.write_calendar_id, "ms-cal-id")
+
+    def test_patch_other_users_account_returns_404(self):
+        g_other = _make_google(self.other, email="bob@gmail.com")
+
+        resp = self.client.patch(
+            f"/api/calendar-accounts/g:{g_other.pk}",
+            {"write_calendar_id": "cal-hack"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    # ── 10-account cap ────────────────────────────────────────────────────────
+
+    def test_too_many_accounts_rejected(self):
+        """The 11th distinct Google account for a user must be rejected with
+        ?error=too_many_accounts in the redirect URL."""
+        # Fill up 10 distinct Google accounts using _simulate_google_callback.
+        for i in range(10):
+            _simulate_google_callback(self.user, email=f"alice{i}@gmail.com", refresh=f"r{i}")
+
+        self.assertEqual(
+            __import__("apps.scheduling.models", fromlist=["GoogleAccount"])
+            .GoogleAccount.objects.filter(user=self.user).count(),
+            10,
+        )
+
+        # The 11th callback should redirect with ?error=too_many_accounts.
+        # We call the view directly rather than through HTTP to avoid needing
+        # real OAuth secrets.
+        from django.test import RequestFactory
+        from apps.scheduling.views import oauth_callback
+
+        factory = RequestFactory()
+        state = __import__("apps.scheduling.views", fromlist=["_signer"])._signer().sign(
+            f"user:{self.user.pk}"
+        )
+
+        with patch("apps.scheduling.views.exchange_code") as mock_exchange, \
+             patch("apps.scheduling.views.fetch_userinfo") as mock_userinfo:
+            mock_exchange.return_value = {
+                "access_token": "at-11th",
+                "refresh_token": "rt-11th",
+                "expires_in": 3600,
+                "scope": "calendar.readonly",
+            }
+            mock_userinfo.return_value = {"email": "alice-11th@gmail.com"}
+
+            request = factory.get(
+                "/api/oauth/google/callback",
+                {"code": "code11", "state": state},
+            )
+            response = oauth_callback(request)
+
+        # Must redirect with error=too_many_accounts query param.
+        self.assertIn("too_many_accounts", response.url)
+        # Still only 10 accounts.
+        from apps.scheduling.models import GoogleAccount
+        self.assertEqual(GoogleAccount.objects.filter(user=self.user).count(), 10)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: _pick_write_provider reads WriteCalendarDefault
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    FRONTEND_BASE_URL="http://localhost:3000",
+)
+class PickWriteProviderTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="pp@slotly.test", password="x" * 12)
+
+    def test_returns_none_when_no_accounts(self):
+        from apps.scheduling.services import _pick_write_provider
+        self.assertIsNone(_pick_write_provider(self.user))
+
+    def test_auto_elects_google_and_persists_default(self):
+        from apps.scheduling.services import _pick_write_provider
+        g = _make_google(self.user, email="pp@gmail.com")
+
+        provider = _pick_write_provider(self.user)
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "google")
+        self.assertEqual(provider.account_id, g.pk)
+
+        # Default was persisted.
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertEqual(wcd.google_account_id, g.pk)
+
+    def test_auto_elects_microsoft_when_no_google(self):
+        from apps.scheduling.services import _pick_write_provider
+        m = _make_microsoft(self.user, email="pp@outlook.com")
+
+        provider = _pick_write_provider(self.user)
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "microsoft")
+        self.assertEqual(provider.account_id, m.pk)
+
+    def test_respects_explicit_default(self):
+        from apps.scheduling.services import _pick_write_provider
+        g1 = _make_google(self.user, email="pp@gmail.com")
+        g2 = _make_google(self.user, email="pp.work@gmail.com")
+        # Set default to g2, not the first one.
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g2)
+
+        provider = _pick_write_provider(self.user)
+        self.assertEqual(provider.account_id, g2.pk)
+
+    def test_microsoft_default_preferred_over_google_account(self):
+        from apps.scheduling.services import _pick_write_provider
+        _make_google(self.user, email="pp@gmail.com")
+        m = _make_microsoft(self.user, email="pp@outlook.com")
+        # Explicitly set default to Microsoft.
+        WriteCalendarDefault.objects.create(user=self.user, microsoft_account=m)
+
+        provider = _pick_write_provider(self.user)
+        self.assertEqual(provider.name, "microsoft")
+        self.assertEqual(provider.account_id, m.pk)
