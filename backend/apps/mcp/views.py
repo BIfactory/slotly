@@ -7,6 +7,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.mcp import idempotency
 from apps.mcp.auth import MCPTokenAuthentication, has_scope
 from apps.mcp.models import APIToken, MCPCall
 from apps.mcp.throttling import MCPTokenThrottle
@@ -32,6 +33,7 @@ class ToolsListView(MCPAPIView):
                     "name": t.name,
                     "description": t.description,
                     "inputSchema": t.input_schema,
+                    "annotations": {"sensitivity": t.sensitivity},
                 }
                 for t in list_tools()
             ],
@@ -51,6 +53,15 @@ class ToolsCallView(MCPAPIView):
         if not isinstance(params, dict):
             return Response({"error": "invalid_request", "detail": "params must be an object"}, status=400)
 
+        # Validate idempotency_key if present.
+        raw_idem_key = request.data.get("idempotency_key")
+        if raw_idem_key is not None:
+            if not isinstance(raw_idem_key, str) or not (1 <= len(raw_idem_key) <= 128):
+                return Response(
+                    {"error": "invalid_request", "detail": "idempotency_key must be a string of length 1-128"},
+                    status=400,
+                )
+
         tool = get_tool(name)
         if tool is None:
             return Response({"error": "unknown_tool", "name": name}, status=404)
@@ -62,6 +73,16 @@ class ToolsCallView(MCPAPIView):
             # Audit the attempt as scope_denied before refusing.
             _record_call(token, tool.name, status_="error", duration_ms=0, error_code="scope_denied")
             return Response({"error": "scope_denied"}, status=403)
+
+        # Idempotency enforcement — only for write_external tools.
+        is_write = tool.sensitivity == "write_external"
+        idem_key = raw_idem_key if (is_write and raw_idem_key is not None) else None
+
+        if idem_key is not None:
+            cached = idempotency.lookup(token, idem_key)
+            if cached is not None:
+                _record_call(token, tool.name, status_="ok", duration_ms=0, error_code="idempotency_hit")
+                return Response({"result": cached})
 
         started = time.perf_counter()
         try:
@@ -82,6 +103,17 @@ class ToolsCallView(MCPAPIView):
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         _record_call(token, tool.name, status_="ok", duration_ms=duration_ms, error_code="")
+
+        # Store idempotency record after successful write dispatch.
+        if idem_key is not None:
+            idempotency.store(
+                token,
+                idem_key,
+                tool.name,
+                result,
+                booking_uuid=result.get("booking_uuid") if isinstance(result, dict) else None,
+            )
+
         return Response({"result": result})
 
 

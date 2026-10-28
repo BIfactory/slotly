@@ -16,6 +16,7 @@ class ToolDefinition:
     description: str
     input_schema: dict              # JSON Schema (object) for params
     handler: Handler
+    sensitivity: str = "read_only"  # "read_only" | "write_external"
 
 
 _REGISTRY: dict[str, ToolDefinition] = {}
@@ -26,6 +27,7 @@ def register_tool(
     *,
     description: str,
     input_schema: dict,
+    sensitivity: str = "read_only",
 ) -> Callable[[Handler], Handler]:
     def _decorator(func: Handler) -> Handler:
         if name in _REGISTRY:
@@ -35,6 +37,7 @@ def register_tool(
             description=description,
             input_schema=input_schema,
             handler=func,
+            sensitivity=sensitivity,
         )
         return func
     return _decorator
