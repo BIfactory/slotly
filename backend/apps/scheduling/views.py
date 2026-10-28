@@ -16,7 +16,6 @@ The status + disconnect endpoints are plain JSON, used by /settings/integrations
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -45,6 +44,16 @@ from .google_client import (
 )
 from .models import Booking, BookingRequest, GoogleAccount, MeetingType, MicrosoftAccount
 from .security import encrypt
+from . import services as _svc
+from .services import (
+    _can_view_peer,
+    _description_with_manage_link,
+    _default_title,
+    _extract_meet_link,
+    _first_busy_user,
+    _manage_url,
+    _notify_booking_rescheduled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1199,23 +1208,6 @@ class PublicBookingRescheduleView(APIView):
         return Response(_serialize_booking(booking))
 
 
-def _notify_booking_rescheduled(booking: Booking, old_start) -> None:
-    """In-app + email the host that the visitor moved their booking."""
-    from apps.notifications.dispatch import notify as _notify
-    from apps.notifications.models import Notification as _N
-
-    _notify(
-        booking.host,
-        _N.Type.BOOKING_RESCHEDULED_BY_VISITOR,
-        {
-            "visitor_name": booking.visitor_name,
-            "visitor_email": booking.visitor_email,
-            "from_when": old_start.strftime("%a %d %b %H:%M"),
-            "to_when": booking.start_at.strftime("%a %d %b %H:%M"),
-        },
-    )
-
-
 def _notify_booking_cancelled(booking: Booking) -> None:
     """Host in-app notification + email when a visitor cancels."""
     from apps.notifications.dispatch import notify as _notify
@@ -1606,7 +1598,8 @@ class HostBookingCancelView(APIView):
 
 
 def _mail_visitor_host_cancellation(booking: Booking, reason: str) -> None:
-    """Branded HTML/text email to the visitor when the host cancels."""
+    """Branded HTML/text email to the visitor when the host cancels.
+    Duplicated in services.py for use by cancel_booking service function."""
     from django.conf import settings as _settings
     from django.core.mail import EmailMultiAlternatives
 
@@ -1906,13 +1899,23 @@ def _mail_visitor_rejection(req, note: str) -> None:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+# Business-logic helpers (_can_view_peer, _first_busy_user, _default_title,
+# _manage_url, _description_with_manage_link, _extract_meet_link,
+# _notify_booking_rescheduled) now live in services.py and are imported at
+# the top of this file.  Provider-plumbing helpers (_WriteProvider,
+# _pick_write_provider, _provider_for) are duplicated here so that unittest
+# patches on apps.scheduling.views.create_calendar_event keep working for the
+# existing public-booking tests (they patch the module-level name, which means
+# they must patch the same namespace that _pick_write_provider reads from).
 
 
-@dataclass(slots=True)
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass(slots=True)
 class _WriteProvider:
-    """Uniform handle over Google vs. Microsoft. Booking code calls
-    ``provider.create_event(user, ...)`` (and later ``provider.delete_event``)
-    without caring which backend it dispatches to."""
+    """Uniform handle over Google vs. Microsoft for view-layer code.
+    See services._WriteProvider for the services-layer counterpart."""
 
     name: str
     write_calendar_id: str
@@ -1921,10 +1924,7 @@ class _WriteProvider:
 
 
 def _pick_write_provider(user) -> _WriteProvider | None:
-    """Choose which OAuth-connected provider should host the new event.
-    Prefers Google when both are connected — arbitrary but stable, and
-    the user can effectively override by disconnecting the one they don't
-    want us writing into. Returns None when neither is connected."""
+    """Choose which OAuth-connected provider should host the new event."""
     g = GoogleAccount.objects.filter(user=user).only("write_calendar_id").first()
     if g is not None:
         return _WriteProvider(
@@ -1937,7 +1937,7 @@ def _pick_write_provider(user) -> _WriteProvider | None:
     if m is not None:
         return _WriteProvider(
             name="microsoft",
-            write_calendar_id=m.write_calendar_id,  # empty = primary
+            write_calendar_id=m.write_calendar_id,
             create_event=_graph.create_calendar_event,
             delete_event=_graph.delete_calendar_event,
         )
@@ -1945,27 +1945,12 @@ def _pick_write_provider(user) -> _WriteProvider | None:
 
 
 def _provider_for(name: str) -> Any:
-    """Look up create/delete helpers by provider name — used from the
-    cancel endpoint which knows the provider from the Booking row."""
+    """Look up create/delete helpers by provider name."""
     if name == "google":
         return create_calendar_event, delete_calendar_event
     if name == "microsoft":
         return _graph.create_calendar_event, _graph.delete_calendar_event
     raise ValueError(f"Unknown provider: {name}")
-
-
-def _manage_url(booking: Booking) -> str:
-    return f"{settings.FRONTEND_BASE_URL.rstrip('/')}/b/{booking.uuid}"
-
-
-def _description_with_manage_link(base: str, booking: Booking) -> str:
-    """Append a "Manage / Cancel this booking" footer to the visitor-
-    facing event description. Kept as the last block so provider clients
-    that truncate long descriptions still show the meeting context first."""
-    footer = (
-        f"\n\n— Manage or cancel this booking: {_manage_url(booking)}"
-    )
-    return (base or "") + footer
 
 
 def _parse_iso_dt(value):
@@ -1982,61 +1967,6 @@ def _parse_iso_dt(value):
     return parsed
 
 
-def _can_view_peer(caller, peer) -> bool:
-    """Same visibility rule as /api/me/peer-availability: shared team OR
-    accepted connection OR peer is publicly bookable."""
-    from apps.connections.models import Connection as _Connection
-    from apps.teams.models import Team as _Team
-    if peer.pk == caller.pk:
-        return True
-    if _Team.objects.filter(memberships__user=caller).filter(memberships__user=peer).exists():
-        return True
-    if _Connection.are_connected(caller.pk, peer.pk):
-        return True
-    return bool(peer.share_enabled)
-
-
-def _first_busy_user(users, start_dt, end_dt, *, exclude_event_id: str = ""):
-    """Return the first user in ``users`` whose calendar or unavailability
-    overlaps [start_dt, end_dt), or None if all are free. Mirrors the busy
-    aggregation used by the availability views.
-
-    ``exclude_event_id`` skips a specific provider event id — used by
-    reschedule so the booking being moved doesn't block itself. The check
-    is by provider `uid` (matches how apps.calendars stores it), so this
-    only helps when the ICS sync has pulled the event's uid; otherwise
-    the exclusion is a no-op (rare, tolerable).
-    """
-    from django.db.models import Q as _Q
-    from apps.availability.models import Unavailability as _Un
-    from apps.calendars.models import CalendarEvent as _CE
-
-    ids = [u.pk for u in users]
-    busy_ids = set()
-    events_qs = _CE.objects.filter(
-        _Q(transp=_CE.Transparency.OPAQUE) | _Q(is_all_day=True),
-        calendar__owner_id__in=ids,
-        calendar__include_in_busy=True,
-        dtstart__lt=end_dt,
-        dtend__gt=start_dt,
-    ).exclude(status=_CE.Status.CANCELLED)
-    if exclude_event_id:
-        events_qs = events_qs.exclude(uid=exclude_event_id)
-    for ev in events_qs.values("calendar__owner_id")[:1]:
-        busy_ids.add(ev["calendar__owner_id"])
-    if len(busy_ids) < len(ids):
-        for u in _Un.objects.filter(
-            user_id__in=ids,
-            starts_at__lt=end_dt,
-            ends_at__gt=start_dt,
-        ).values("user_id")[:1]:
-            busy_ids.add(u["user_id"])
-    for u in users:
-        if u.pk in busy_ids:
-            return u
-    return None
-
-
 def _clean_text(value, *, fallback: str, maxlen: int) -> str:
     if not isinstance(value, str):
         return fallback
@@ -2044,11 +1974,6 @@ def _clean_text(value, *, fallback: str, maxlen: int) -> str:
     if not v:
         return fallback
     return v[:maxlen]
-
-
-def _default_title(peer) -> str:
-    name = f"{peer.first_name} {peer.last_name}".strip() or peer.email
-    return f"Meeting with {name}"
 
 
 def _render_answers_block(questions: list, answers: dict) -> str:
@@ -2064,25 +1989,6 @@ def _render_answers_block(questions: list, answers: dict) -> str:
     if not lines:
         return ""
     return "Additional info:\n" + "\n".join(lines)
-
-
-def _extract_meet_link(event: dict) -> str:
-    """Pull the video-call URL out of a provider event dict, or ""'.
-    - Google: top-level `hangoutLink`; fallback to conferenceData
-      entryPoints where entryPointType == "video".
-    - Microsoft Graph: `onlineMeeting.joinUrl`.
-    """
-    link = event.get("hangoutLink")
-    if link:
-        return link
-    conf = event.get("conferenceData") or {}
-    for ep in conf.get("entryPoints", []) or []:
-        if ep.get("entryPointType") == "video" and ep.get("uri"):
-            return ep["uri"]
-    online = event.get("onlineMeeting") or {}
-    if online.get("joinUrl"):
-        return online["joinUrl"]
-    return ""
 
 
 def _looks_like_email(s: str) -> bool:
