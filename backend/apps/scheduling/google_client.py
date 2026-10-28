@@ -227,15 +227,18 @@ class GoogleApiError(RuntimeError):
         self.status = status
 
 
-def list_writable_calendars(user) -> list[dict]:
+def list_writable_calendars(user, account: "GoogleAccount | None" = None) -> list[dict]:
     """
     Returns the user's calendarList entries filtered to ones we can write
     events into (accessRole owner or writer). Each item: {id, summary,
     primary, accessRole, timeZone}. Empty list is a valid result — the user
     is connected but has no writable calendars, so booking should be
     disabled until they grant access to one.
+
+    When ``account`` is given, uses that specific GoogleAccount's credentials.
+    Otherwise falls back to the default/first account (legacy behaviour).
     """
-    creds = get_credentials(user)
+    creds = get_credentials(user, account.id if account is not None else None)
     with bearer_session(creds) as client:
         r = client.get("/calendar/v3/users/me/calendarList")
     if r.status_code != 200:

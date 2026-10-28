@@ -650,3 +650,150 @@ class PickWriteProviderRaceSafetyTests(TestCase):
         self.assertEqual(p2.account_id, g.pk)
         # Exactly one WriteCalendarDefault row exists.
         self.assertEqual(WriteCalendarDefault.objects.filter(user=self.user).count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# S0: per-account writable-calendars picker
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    GOOGLE_OAUTH_CLIENT_ID="dev-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET="dev-client-secret",
+    FRONTEND_BASE_URL="http://localhost:3000",
+)
+class WritableCalendarsPerAccountGoogleTests(TestCase):
+    """Tests for ?account_id=g:<pk> on GET /api/google-account/writable-calendars."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.user = User.objects.create_user(email="wc@slotly.test", password="x" * 12)
+        self.other = User.objects.create_user(email="other@slotly.test", password="x" * 12)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_with_account_id_fetches_that_account(self):
+        """?account_id=g:<second.pk> must call list_writable_calendars with the
+        second account, not the default/first."""
+        g1 = _make_google(self.user, email="wc1@gmail.com", access_token="AT-wc1")
+        g2 = _make_google(self.user, email="wc2@gmail.com", access_token="AT-wc2")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g1)
+
+        with patch(
+            "apps.scheduling.views.list_writable_calendars", return_value=[]
+        ) as mock_lwc:
+            resp = self.client.get(
+                f"/api/google-account/writable-calendars?account_id=g:{g2.pk}"
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        # The account kwarg passed to list_writable_calendars must be g2.
+        mock_lwc.assert_called_once()
+        _, kwargs = mock_lwc.call_args
+        self.assertEqual(kwargs["account"].pk, g2.pk)
+
+    def test_without_account_id_falls_back_to_default(self):
+        """No query param → list_writable_calendars called with account=None."""
+        g = _make_google(self.user, email="wc@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        with patch(
+            "apps.scheduling.views.list_writable_calendars", return_value=[]
+        ) as mock_lwc:
+            resp = self.client.get("/api/google-account/writable-calendars")
+
+        self.assertEqual(resp.status_code, 200)
+        mock_lwc.assert_called_once()
+        _, kwargs = mock_lwc.call_args
+        self.assertIsNone(kwargs["account"])
+
+    def test_wrong_prefix_rejected_with_400(self):
+        """?account_id=m:<pk> on the Google endpoint → 400 validation_error."""
+        g = _make_google(self.user, email="wc@gmail.com")
+        resp = self.client.get(f"/api/google-account/writable-calendars?account_id=m:{g.pk}")
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body.get("code"), "validation_error")
+
+    def test_other_users_account_returns_404(self):
+        """?account_id=g:<other user's account pk> → 404."""
+        g_other = _make_google(self.other, email="other@gmail.com")
+        resp = self.client.get(
+            f"/api/google-account/writable-calendars?account_id=g:{g_other.pk}"
+        )
+        self.assertEqual(resp.status_code, 404)
+        body = resp.json()
+        self.assertEqual(body.get("code"), "not_found")
+
+
+@override_settings(
+    MICROSOFT_OAUTH_CLIENT_ID="dev-ms-client-id",
+    MICROSOFT_OAUTH_CLIENT_SECRET="dev-ms-client-secret",
+    MICROSOFT_OAUTH_REDIRECT_URI="http://localhost:8000/api/oauth/microsoft/callback",
+    FRONTEND_BASE_URL="http://localhost:3000",
+)
+class WritableCalendarsPerAccountMicrosoftTests(TestCase):
+    """Tests for ?account_id=m:<pk> on GET /api/microsoft-account/writable-calendars."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.user = User.objects.create_user(email="mswc@slotly.test", password="x" * 12)
+        self.other = User.objects.create_user(email="msother@slotly.test", password="x" * 12)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_with_account_id_fetches_that_account(self):
+        """?account_id=m:<second.pk> must call _graph.list_writable_calendars with
+        the second account, not the default/first."""
+        m1 = _make_microsoft(self.user, email="mswc1@outlook.com", access_token="AT-ms1")
+        m2 = _make_microsoft(self.user, email="mswc2@outlook.com", access_token="AT-ms2")
+        WriteCalendarDefault.objects.create(user=self.user, microsoft_account=m1)
+
+        with patch(
+            "apps.scheduling.views._graph.list_writable_calendars", return_value=[]
+        ) as mock_lwc:
+            resp = self.client.get(
+                f"/api/microsoft-account/writable-calendars?account_id=m:{m2.pk}"
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        mock_lwc.assert_called_once()
+        _, kwargs = mock_lwc.call_args
+        self.assertEqual(kwargs["account"].pk, m2.pk)
+
+    def test_without_account_id_falls_back_to_default(self):
+        """No query param → _graph.list_writable_calendars called with account=None."""
+        m = _make_microsoft(self.user, email="mswc@outlook.com")
+        WriteCalendarDefault.objects.create(user=self.user, microsoft_account=m)
+
+        with patch(
+            "apps.scheduling.views._graph.list_writable_calendars", return_value=[]
+        ) as mock_lwc:
+            resp = self.client.get("/api/microsoft-account/writable-calendars")
+
+        self.assertEqual(resp.status_code, 200)
+        mock_lwc.assert_called_once()
+        _, kwargs = mock_lwc.call_args
+        self.assertIsNone(kwargs["account"])
+
+    def test_wrong_prefix_rejected_with_400(self):
+        """?account_id=g:<pk> on the Microsoft endpoint → 400 validation_error."""
+        m = _make_microsoft(self.user, email="mswc@outlook.com")
+        resp = self.client.get(
+            f"/api/microsoft-account/writable-calendars?account_id=g:{m.pk}"
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body.get("code"), "validation_error")
+
+    def test_other_users_account_returns_404(self):
+        """?account_id=m:<other user's account pk> → 404."""
+        m_other = _make_microsoft(self.other, email="msother@outlook.com")
+        resp = self.client.get(
+            f"/api/microsoft-account/writable-calendars?account_id=m:{m_other.pk}"
+        )
+        self.assertEqual(resp.status_code, 404)
+        body = resp.json()
+        self.assertEqual(body.get("code"), "not_found")

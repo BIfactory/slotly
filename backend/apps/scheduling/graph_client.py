@@ -223,11 +223,16 @@ def _bearer(creds: _Credentials) -> httpx.Client:
     )
 
 
-def list_writable_calendars(user) -> list[dict]:
+def list_writable_calendars(user, account: "MicrosoftAccount | None" = None) -> list[dict]:
     """Return the user's calendars we can write to (canEdit=true). Each
     item mirrors the Google shape so the settings dropdown treats both
-    the same: {id, summary, primary, access_role, time_zone}."""
-    creds = get_credentials(user)
+    the same: {id, summary, primary, access_role, time_zone}.
+
+    When ``account`` is given, uses that specific MicrosoftAccount's
+    credentials. Otherwise falls back to the default/first account (legacy
+    behaviour).
+    """
+    creds = get_credentials(user, account.id if account is not None else None)
     with _bearer(creds) as client:
         r = client.get("/me/calendars")
     if r.status_code != 200:

@@ -413,12 +413,13 @@ function AccountRow({
   const [calendars, setCalendars] = useState<WritableCalendar[] | null>(null);
   const [savingCalendar, setSavingCalendar] = useState(false);
 
-  // Fetch writable calendars for this row's provider once on mount.
+  // Fetch writable calendars for THIS account specifically using its composite
+  // id (e.g. "g:3" / "m:7") so the backend resolves the correct OAuth token.
   useEffect(() => {
     let alive = true;
     const fetcher =
       account.provider === "google" ? getWritableCalendars : getMicrosoftWritableCalendars;
-    fetcher()
+    fetcher(account.id)
       .then((list) => {
         if (alive) setCalendars(list);
       })
@@ -428,7 +429,7 @@ function AccountRow({
     return () => {
       alive = false;
     };
-  }, [account.provider]);
+  }, [account.id, account.provider]);
 
   async function handleDisconnect() {
     setDisconnecting(true);

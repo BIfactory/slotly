@@ -447,20 +447,65 @@ class GoogleAccountStatusView(APIView):
         return Response(status=204)
 
 
+def _parse_account_id(raw: str | None, prefix: str) -> int | None:
+    """
+    Parse a composite account_id query param (e.g. ``g:7`` or ``m:3``).
+
+    Returns the integer PK when ``raw`` matches ``<prefix>:<digits>``, ``None``
+    when ``raw`` is ``None`` (caller should fall back to default behaviour), or
+    raises ``ValueError`` with a human-readable message on any mismatch.
+    """
+    if raw is None:
+        return None
+    expected_prefix = f"{prefix}:"
+    if not raw.startswith(expected_prefix):
+        raise ValueError(
+            f"account_id must start with '{expected_prefix}' for this endpoint, got '{raw}'"
+        )
+    tail = raw[len(expected_prefix):]
+    if not tail.isdigit():
+        raise ValueError(f"account_id must be '{prefix}:<integer>', got '{raw}'")
+    return int(tail)
+
+
 class WritableCalendarsView(APIView):
     """
     GET /api/google-account/writable-calendars — the connected user's
     calendars the OAuth grant can write into (owner + writer). Feeds the
     settings dropdown for picking the write target.
+
+    Optional query param ``?account_id=g:<pk>`` scopes the lookup to a
+    specific GoogleAccount row owned by the authenticated user. Omitting
+    the param keeps the legacy fallback (default / first account).
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request) -> Response:
-        if not GoogleAccount.objects.filter(user=request.user).exists():
-            return Response({"detail": "Google Calendar is not connected."}, status=404)
+        # ── Resolve optional per-account scope ───────────────────────────────
+        raw_id = request.query_params.get("account_id")
         try:
-            items = list_writable_calendars(request.user)
+            pk = _parse_account_id(raw_id, "g")
+        except ValueError as exc:
+            return Response(
+                {"code": "validation_error", "detail": str(exc)}, status=400
+            )
+
+        if pk is not None:
+            try:
+                account = GoogleAccount.objects.get(pk=pk, user=request.user)
+            except GoogleAccount.DoesNotExist:
+                return Response(
+                    {"code": "not_found", "detail": "Google account not found."}, status=404
+                )
+        else:
+            if not GoogleAccount.objects.filter(user=request.user).exists():
+                return Response({"detail": "Google Calendar is not connected."}, status=404)
+            account = None
+
+        # ── Fetch calendars for the resolved account ──────────────────────────
+        try:
+            items = list_writable_calendars(request.user, account=account)
         except GoogleOAuthError as exc:
             return Response({"detail": f"Reconnect needed: {exc}"}, status=401)
         except GoogleApiError as exc:
@@ -693,13 +738,40 @@ class MicrosoftAccountStatusView(APIView):
 
 
 class MicrosoftWritableCalendarsView(APIView):
+    """
+    GET /api/microsoft-account/writable-calendars — mirrors WritableCalendarsView.
+
+    Optional query param ``?account_id=m:<pk>`` scopes the lookup to a
+    specific MicrosoftAccount row owned by the authenticated user.
+    """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request) -> Response:
-        if not MicrosoftAccount.objects.filter(user=request.user).exists():
-            return Response({"detail": "Microsoft is not connected."}, status=404)
+        # ── Resolve optional per-account scope ───────────────────────────────
+        raw_id = request.query_params.get("account_id")
         try:
-            items = _graph.list_writable_calendars(request.user)
+            pk = _parse_account_id(raw_id, "m")
+        except ValueError as exc:
+            return Response(
+                {"code": "validation_error", "detail": str(exc)}, status=400
+            )
+
+        if pk is not None:
+            try:
+                account = MicrosoftAccount.objects.get(pk=pk, user=request.user)
+            except MicrosoftAccount.DoesNotExist:
+                return Response(
+                    {"code": "not_found", "detail": "Microsoft account not found."}, status=404
+                )
+        else:
+            if not MicrosoftAccount.objects.filter(user=request.user).exists():
+                return Response({"detail": "Microsoft is not connected."}, status=404)
+            account = None
+
+        # ── Fetch calendars for the resolved account ──────────────────────────
+        try:
+            items = _graph.list_writable_calendars(request.user, account=account)
         except _graph.MicrosoftOAuthError as exc:
             return Response({"detail": f"Reconnect needed: {exc}"}, status=401)
         except _graph.MicrosoftApiError as exc:
