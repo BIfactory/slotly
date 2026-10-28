@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from django.core.cache import cache
 from django.test import TestCase, override_settings
@@ -739,3 +739,70 @@ class HasScopeRegressionTest(TestCase):
             "slotly.update_booking", "slotly.cancel_booking",
         ):
             self.assertTrue(has_scope(token, capability))
+
+
+# ---------------------------------------------------------------------------
+# OAuth error → 503 upstream_oauth_failed
+# ---------------------------------------------------------------------------
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    FRONTEND_BASE_URL="http://localhost:3000",
+    TIME_ZONE="UTC",
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+)
+class OAuthErrorMapsTo503Tests(APITestCase):
+    """GoogleOAuthError / MicrosoftOAuthError raised by the service → 503 upstream_oauth_failed."""
+
+    def setUp(self):
+        cache.clear()
+        self.host = User.objects.create_user(
+            email="oauth.host@t3.local", password="pass"
+        )
+        self.guest = User.objects.create_user(
+            email="oauth.guest@t3.local", password="pass"
+        )
+        self.team = Team.objects.create(name="OAuthTeam")
+        Membership.objects.create(team=self.team, user=self.host, role=Membership.Role.ADMIN)
+        Membership.objects.create(team=self.team, user=self.guest, role=Membership.Role.MEMBER)
+        self.token, self.raw = APIToken.create_for_user(
+            self.host, "oauth-503", ["create_booking"]
+        )
+
+    def _call(self, params):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.raw}")
+        return self.client.post(
+            "/mcp/v1/tools/call",
+            {"name": "slotly.create_booking", "params": params},
+            format="json",
+        )
+
+    def _params(self):
+        start_iso, end_iso = _future_slot()
+        return {
+            "attendee_user_ids": [self.guest.pk],
+            "start": start_iso,
+            "end": end_iso,
+        }
+
+    def test_google_oauth_error_maps_to_503(self):
+        """GoogleOAuthError propagated from service → MCP returns 503 upstream_oauth_failed, not 500."""
+        from apps.scheduling.google_client import GoogleOAuthError
+
+        with patch("apps.scheduling.services.create_booking", side_effect=GoogleOAuthError("token expired")):
+            resp = self._call(self._params())
+
+        self.assertEqual(resp.status_code, 503)
+        data = resp.json()
+        self.assertEqual(data["error"], "upstream_oauth_failed")
+
+    def test_microsoft_oauth_error_maps_to_503(self):
+        """MicrosoftOAuthError propagated from service → MCP returns 503 upstream_oauth_failed, not 500."""
+        from apps.scheduling import graph_client as _gc
+
+        with patch("apps.scheduling.services.create_booking", side_effect=_gc.MicrosoftOAuthError("ms token expired")):
+            resp = self._call(self._params())
+
+        self.assertEqual(resp.status_code, 503)
+        data = resp.json()
+        self.assertEqual(data["error"], "upstream_oauth_failed")

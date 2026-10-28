@@ -282,7 +282,7 @@ class UpdateBookingTimeChangeTest(TestCase):
 
         with patch("apps.scheduling.services._pick_write_provider", return_value=provider):
             with patch("apps.scheduling.services._first_busy_user", return_value=None):
-                with patch("apps.scheduling.services._notify_booking_rescheduled"):
+                with patch("apps.scheduling.services._notify_booking_rescheduled") as mock_notify:
                     result = update_booking(
                         self.host,
                         str(self.booking.uuid),
@@ -291,6 +291,8 @@ class UpdateBookingTimeChangeTest(TestCase):
                     )
 
         self.assertEqual(result["status"], "updated")
+        # Host-initiated reschedule must NOT fire the visitor-reschedule notification.
+        mock_notify.assert_not_called()
         provider.delete_event.assert_called_once()
         provider.create_event.assert_called_once()
         self.booking.refresh_from_db()

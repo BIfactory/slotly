@@ -8,6 +8,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.mcp import idempotency
+from apps.scheduling import graph_client as _graph
+from apps.scheduling.google_client import GoogleOAuthError
+
+MicrosoftOAuthError = _graph.MicrosoftOAuthError
 from apps.mcp.auth import MCPTokenAuthentication, has_scope
 from apps.mcp.models import APIToken, MCPCall
 from apps.mcp.throttling import MCPTokenThrottle
@@ -95,6 +99,13 @@ class ToolsCallView(MCPAPIView):
             duration_ms = int((time.perf_counter() - started) * 1000)
             _record_call(token, tool.name, status_="error", duration_ms=duration_ms, error_code="forbidden")
             return Response({"error": "forbidden", "detail": _as_detail(exc)}, status=403)
+        except (GoogleOAuthError, MicrosoftOAuthError) as exc:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            _record_call(token, tool.name, status_="error", duration_ms=duration_ms, error_code="upstream_oauth_failed")
+            return Response(
+                {"error": "upstream_oauth_failed", "detail": str(exc)},
+                status=503,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("MCP tool %s failed", tool.name)
             duration_ms = int((time.perf_counter() - started) * 1000)
