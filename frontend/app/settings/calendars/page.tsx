@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
@@ -10,13 +9,14 @@ import {
   Copy,
   ExternalLink,
   HelpCircle,
+  Plus,
   RefreshCw,
   Share2,
+  Unplug,
 } from "lucide-react";
 import { AuthedHeader } from "@/components/AuthedHeader";
 import { SettingsNav } from "@/components/SettingsNav";
 import { ProviderBadge } from "@/components/ProviderBadge";
-import { ProviderCard, type ProviderStatus } from "@/components/ProviderCard";
 import { CardSkeleton, ListSkeleton, PageSkeleton } from "@/components/Skeleton";
 import { Button, FormError, FormSuccess, Input, Label } from "@/components/ui";
 import { getSession } from "@/lib/auth";
@@ -33,12 +33,18 @@ import {
 } from "@/lib/calendars";
 import {
   GOOGLE_CONNECT_URL,
-  disconnectGoogleAccount,
-  getGoogleAccount,
+  MICROSOFT_CONNECT_URL,
   getWritableCalendars,
-  setWriteCalendar,
-  type GoogleAccountStatus,
+  getMicrosoftWritableCalendars,
+  type WritableCalendar,
 } from "@/lib/google";
+import {
+  type CalendarAccount,
+  listCalendarAccounts,
+  setDefaultAccount,
+  disconnectAccount,
+  patchAccountWriteCalendar,
+} from "@/lib/calendar-accounts";
 
 const PROVIDER_LABEL: Record<CalendarProvider, string> = {
   google: "Google",
@@ -87,11 +93,27 @@ function CalendarsPageInner() {
   const [loaded, setLoaded] = useState(false);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   const [email, setEmail] = useState<string>("");
-  const [google, setGoogle] = useState<GoogleAccountStatus | null>(null);
+  const [accounts, setAccounts] = useState<CalendarAccount[]>([]);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
 
   const googleParam = searchParams?.get("google");
-  const reason = searchParams?.get("reason");
+  const microsoftParam = searchParams?.get("microsoft");
   const linkedEmail = searchParams?.get("email");
+  const reason = searchParams?.get("reason");
+  const errorParam = searchParams?.get("error");
+
+  // Clear transient query params without a full page reload.
+  useEffect(() => {
+    const hasTransient =
+      googleParam != null ||
+      microsoftParam != null ||
+      linkedEmail != null ||
+      reason != null ||
+      errorParam != null;
+    if (hasTransient) {
+      router.replace("/settings/calendars");
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     (async () => {
@@ -101,9 +123,16 @@ function CalendarsPageInner() {
         return;
       }
       setEmail(session.data?.user?.email ?? "");
-      const [cals, g] = await Promise.allSettled([listCalendars(), getGoogleAccount()]);
+      const [cals, accts] = await Promise.allSettled([
+        listCalendars(),
+        listCalendarAccounts(),
+      ]);
       setCalendars(cals.status === "fulfilled" ? cals.value : []);
-      setGoogle(g.status === "fulfilled" ? g.value : { connected: false });
+      if (accts.status === "fulfilled") {
+        setAccounts(accts.value);
+      } else {
+        setAccountsError("Couldn't load connected accounts.");
+      }
       setLoaded(true);
     })().catch(() => router.replace("/auth/login"));
   }, [router]);
@@ -125,26 +154,64 @@ function CalendarsPageInner() {
     return () => clearInterval(t);
   }, [calendars]);
 
-  const googleStatus: ProviderStatus | null =
-    google === null
-      ? null
-      : google.connected
-        ? {
-            connected: true,
-            email: google.google_email,
-            write_calendar_id: google.write_calendar_id,
-          }
-        : { connected: false };
-
-  const onDisconnectGoogle = useCallback(async () => {
-    await disconnectGoogleAccount();
-    setGoogle({ connected: false });
+  const handleSetDefault = useCallback(async (id: string) => {
+    // Optimistic update.
+    setAccounts((prev) => prev.map((a) => ({ ...a, is_default: a.id === id })));
+    try {
+      await setDefaultAccount(id);
+    } catch (err) {
+      // Revert on error.
+      setAccounts((prev) => {
+        // We can't restore the old is_default without knowing what it was.
+        // Re-fetch to get the real state from the server.
+        listCalendarAccounts()
+          .then(setAccounts)
+          .catch(() => {});
+        return prev;
+      });
+      setAccountsError(
+        err instanceof Error ? err.message : "Couldn't set default account.",
+      );
+      setTimeout(() => setAccountsError(null), 5000);
+    }
   }, []);
-  const onPickGoogleCalendar = useCallback(async (id: string) => {
-    setGoogle(await setWriteCalendar(id));
-  }, []);
 
-  if (!loaded || googleStatus === null) {
+  const handleDisconnect = useCallback(async (id: string) => {
+    const account = accounts.find((a) => a.id === id);
+    const label = account ? `${account.email} (${account.provider})` : id;
+    if (
+      !confirm(
+        `Disconnect ${label}? Existing events stay in your calendar; only Slotly's access is revoked.`,
+      )
+    )
+      return;
+    try {
+      await disconnectAccount(id);
+      setAccounts((prev) => prev.filter((a) => a.id !== id));
+    } catch (err) {
+      setAccountsError(
+        err instanceof Error ? err.message : "Couldn't disconnect account.",
+      );
+      setTimeout(() => setAccountsError(null), 5000);
+    }
+  }, [accounts]);
+
+  const handlePatchWriteCalendar = useCallback(
+    async (id: string, writeCalendarId: string) => {
+      try {
+        const updated = await patchAccountWriteCalendar(id, writeCalendarId);
+        setAccounts((prev) => prev.map((a) => (a.id === id ? updated : a)));
+      } catch (err) {
+        setAccountsError(
+          err instanceof Error ? err.message : "Couldn't save calendar choice.",
+        );
+        setTimeout(() => setAccountsError(null), 5000);
+      }
+    },
+    [],
+  );
+
+  if (!loaded) {
     return (
       <PageSkeleton>
         <CardSkeleton rows={3} />
@@ -170,6 +237,7 @@ function CalendarsPageInner() {
 
         <SettingsNav />
 
+        {/* Connection result banners — visible before the param-clear redirect fires */}
         {googleParam === "connected" && (
           <Banner kind="ok">
             Google connected{linkedEmail ? ` as ${linkedEmail}` : ""}. You can
@@ -182,45 +250,76 @@ function CalendarsPageInner() {
             Try again — if it keeps failing, sign out of Google in another tab first.
           </Banner>
         )}
+        {microsoftParam === "connected" && (
+          <Banner kind="ok">
+            Microsoft connected{linkedEmail ? ` as ${linkedEmail}` : ""}. You can
+            now book meetings and receive bookings.
+          </Banner>
+        )}
+        {microsoftParam === "error" && (
+          <Banner kind="err">
+            Microsoft connection didn&apos;t go through{reason ? ` (${reason})` : ""}.
+            Try again — if it keeps failing, sign out of Microsoft in another tab first.
+          </Banner>
+        )}
+        {errorParam === "too_many_accounts" && (
+          <Banner kind="err">
+            You can connect at most 10 accounts per provider. Disconnect one before
+            adding another.
+          </Banner>
+        )}
 
+        {/* Multi-account connected accounts section */}
         <section className="space-y-3">
           <SectionHeading
-            title="Connected accounts"
-            subtitle="Sign in with Google or Microsoft — Slotly can then read your free/busy and create meetings with everyone invited."
+            title="Connected calendar accounts"
+            subtitle="Sign in with Google or Microsoft — Slotly reads your free/busy and creates meetings with everyone invited. One account is your default for new bookings."
           />
-          <ProviderCard
-            brand="Google Calendar"
-            mark={<GoogleMark />}
-            connectUrl={GOOGLE_CONNECT_URL}
-            status={googleStatus}
-            fetchCalendars={getWritableCalendars}
-            onDisconnect={onDisconnectGoogle}
-            onPickCalendar={onPickGoogleCalendar}
-            disconnectConfirmText="Disconnect Google Calendar from Slotly? Existing events stay in your calendar; only Slotly's permission is revoked."
-            revokeHref={{
-              label: "myaccount.google.com/permissions",
-              href: "https://myaccount.google.com/permissions",
-            }}
-            footerBullets={[
-              "Slotly asks for permission to create and check events on your behalf.",
-              "Google Meet links are added to bookings automatically.",
-              "You can disconnect anytime — past events stay in your calendar.",
-            ]}
-          />
-          <ComingSoonCard
-            brand="Microsoft 365 / Outlook"
-            mark={<MicrosoftMark />}
-            bullets={[
-              "Will work with both work/school Microsoft 365 accounts and personal Outlook.com.",
-              "Microsoft Teams links will be added to bookings automatically.",
-            ]}
-          />
+
+          {accountsError && (
+            <Banner kind="err">{accountsError}</Banner>
+          )}
+
+          {accounts.length === 0 ? (
+            <EmptyAccountsPanel />
+          ) : (
+            <AccountsTable
+              accounts={accounts}
+              onSetDefault={handleSetDefault}
+              onDisconnect={handleDisconnect}
+              onPatchWriteCalendar={handlePatchWriteCalendar}
+            />
+          )}
+
+          {/* Add account buttons */}
+          <div className="flex flex-wrap gap-2 pt-1">
+            <a
+              href={GOOGLE_CONNECT_URL}
+              title="You'll be sent through Google's sign-in again"
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            >
+              <Plus size={14} aria-hidden />
+              {accounts.some((a) => a.provider === "google")
+                ? "Add another Google account"
+                : "Connect Google Calendar"}
+            </a>
+            <a
+              href={MICROSOFT_CONNECT_URL}
+              title="You'll be sent through Microsoft's sign-in again"
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            >
+              <Plus size={14} aria-hidden />
+              {accounts.some((a) => a.provider === "microsoft")
+                ? "Add another Microsoft account"
+                : "Connect Microsoft 365 / Outlook"}
+            </a>
+          </div>
         </section>
 
         <section className="space-y-3">
           <SectionHeading
             title="URL subscriptions (ICS)"
-            subtitle="Older / alternative method — paste a private iCal URL from any provider. Slotly reads free/busy only, refreshing every 5 minutes. Use this for Outlook (until OAuth ships) or iCloud."
+            subtitle="Older / alternative method — paste a private iCal URL from any provider. Slotly reads free/busy only, refreshing every 5 minutes. Use this for iCloud or any provider without OAuth."
           />
           <AddCalendarForm
             onAdded={(cal) =>
@@ -234,6 +333,205 @@ function CalendarsPageInner() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-account table
+// ---------------------------------------------------------------------------
+
+function EmptyAccountsPanel() {
+  return (
+    <section className="rounded-xl border border-dashed border-zinc-300 bg-white p-8 text-center dark:border-zinc-700 dark:bg-zinc-900">
+      <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        You haven&apos;t connected any calendar accounts yet. Use the buttons
+        below to connect Google or Microsoft.
+      </p>
+    </section>
+  );
+}
+
+function AccountsTable({
+  accounts,
+  onSetDefault,
+  onDisconnect,
+  onPatchWriteCalendar,
+}: {
+  accounts: CalendarAccount[];
+  onSetDefault: (id: string) => Promise<void>;
+  onDisconnect: (id: string) => Promise<void>;
+  onPatchWriteCalendar: (id: string, writeCalendarId: string) => Promise<void>;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-zinc-200 dark:border-zinc-800">
+            <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              Provider
+            </th>
+            <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              Account
+            </th>
+            <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              Default
+            </th>
+            <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              Write calendar
+            </th>
+            <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              Actions
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+          {accounts.map((account) => (
+            <AccountRow
+              key={account.id}
+              account={account}
+              onSetDefault={onSetDefault}
+              onDisconnect={onDisconnect}
+              onPatchWriteCalendar={onPatchWriteCalendar}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AccountRow({
+  account,
+  onSetDefault,
+  onDisconnect,
+  onPatchWriteCalendar,
+}: {
+  account: CalendarAccount;
+  onSetDefault: (id: string) => Promise<void>;
+  onDisconnect: (id: string) => Promise<void>;
+  onPatchWriteCalendar: (id: string, writeCalendarId: string) => Promise<void>;
+}) {
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [calendars, setCalendars] = useState<WritableCalendar[] | null>(null);
+  const [savingCalendar, setSavingCalendar] = useState(false);
+
+  // Fetch writable calendars for this row's provider once on mount.
+  useEffect(() => {
+    let alive = true;
+    const fetcher =
+      account.provider === "google" ? getWritableCalendars : getMicrosoftWritableCalendars;
+    fetcher()
+      .then((list) => {
+        if (alive) setCalendars(list);
+      })
+      .catch(() => {
+        if (alive) setCalendars([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [account.provider]);
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    try {
+      await onDisconnect(account.id);
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
+  async function handlePickCalendar(writeCalendarId: string) {
+    if (savingCalendar) return;
+    setSavingCalendar(true);
+    try {
+      await onPatchWriteCalendar(account.id, writeCalendarId);
+    } finally {
+      setSavingCalendar(false);
+    }
+  }
+
+  return (
+    <tr className="group align-middle">
+      {/* Provider icon */}
+      <td className="px-4 py-3">
+        {account.provider === "google" ? (
+          <GoogleMark size="sm" />
+        ) : (
+          <MicrosoftMark size="sm" />
+        )}
+      </td>
+
+      {/* Email */}
+      <td className="px-4 py-3">
+        <span className="font-medium text-zinc-900 dark:text-zinc-50">
+          {account.email}
+        </span>
+        <span className="ml-2 text-xs text-zinc-400 dark:text-zinc-500">
+          {account.provider === "google" ? "Google" : "Microsoft"}
+        </span>
+      </td>
+
+      {/* Default radio */}
+      <td className="px-4 py-3 text-center">
+        <input
+          type="radio"
+          name="default-account"
+          value={account.id}
+          checked={account.is_default}
+          onChange={() => onSetDefault(account.id)}
+          className="h-4 w-4 accent-indigo-600 cursor-pointer"
+          aria-label={`Set ${account.email} as default`}
+        />
+      </td>
+
+      {/* Write calendar picker */}
+      <td className="px-4 py-3">
+        {calendars === null ? (
+          <div className="h-7 w-32 animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800" />
+        ) : calendars.length > 0 ? (
+          <select
+            value={account.write_calendar_id}
+            onChange={(e) => handlePickCalendar(e.target.value)}
+            disabled={savingCalendar}
+            className="min-w-[10rem] rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+          >
+            {!calendars.some((c) => c.id === account.write_calendar_id) &&
+              account.write_calendar_id !== "" && (
+                <option value={account.write_calendar_id}>
+                  {account.write_calendar_id} (missing)
+                </option>
+              )}
+            {calendars.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.summary}
+                {c.primary ? " (primary)" : ""}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-xs text-zinc-400 dark:text-zinc-500">—</span>
+        )}
+      </td>
+
+      {/* Actions */}
+      <td className="px-4 py-3 text-right">
+        <button
+          type="button"
+          onClick={handleDisconnect}
+          disabled={disconnecting}
+          className="inline-flex items-center gap-1 rounded-md border border-red-200 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
+          aria-label={`Disconnect ${account.email}`}
+        >
+          <Unplug size={12} aria-hidden />
+          {disconnecting ? "Removing…" : "Disconnect"}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared presentational components
+// ---------------------------------------------------------------------------
 
 function SectionHeading({ title, subtitle }: { title: string; subtitle: string }) {
   return (
@@ -258,43 +556,15 @@ function Banner({ kind, children }: { kind: "ok" | "err"; children: ReactNode })
   );
 }
 
-function ComingSoonCard({
-  brand,
-  mark,
-  bullets,
-}: {
-  brand: string;
-  mark: ReactNode;
-  bullets: string[];
-}) {
-  return (
-    <section className="rounded-xl border border-zinc-200 bg-zinc-50/60 p-6 dark:border-zinc-800 dark:bg-zinc-900/40">
-      <header className="mb-3 flex items-center gap-3">
-        <span className="opacity-60">{mark}</span>
-        <div className="flex-1">
-          <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200">{brand}</h2>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">Coming soon</p>
-        </div>
-        <span className="inline-flex items-center rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-          Soon
-        </span>
-      </header>
-      <ul className="ml-5 list-disc space-y-1 text-sm text-zinc-500 dark:text-zinc-400">
-        {bullets.map((b) => (
-          <li key={b}>{b}</li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function GoogleMark() {
+function GoogleMark({ size = "md" }: { size?: "sm" | "md" }) {
+  const dim = size === "sm" ? "h-7 w-7" : "h-9 w-9";
+  const svgDim = size === "sm" ? 18 : 22;
   return (
     <span
       aria-hidden
-      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950"
+      className={`inline-flex ${dim} shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950`}
     >
-      <svg viewBox="0 0 48 48" width="22" height="22">
+      <svg viewBox="0 0 48 48" width={svgDim} height={svgDim}>
         <path fill="#4285F4" d="M44 24c0-1.6-.1-2.8-.5-4.1H24v7.7h11.4c-.5 2.8-2.1 5.2-4.5 6.8v5.6h7.3c4.3-3.9 6.8-9.7 6.8-16z" />
         <path fill="#34A853" d="M24 44c6.2 0 11.4-2 15.2-5.6l-7.3-5.6c-2 1.4-4.6 2.3-7.9 2.3-6 0-11.1-4.1-12.9-9.5H3.5v6c3.8 7.5 11.6 12.4 20.5 12.4z" />
         <path fill="#FBBC05" d="M11.1 25.6c-.5-1.4-.7-2.9-.7-4.6s.3-3.2.7-4.6v-6H3.5C1.8 13.7 1 17 1 20.5s.8 6.8 2.5 9.6l7.6-4.5z" />
@@ -304,13 +574,15 @@ function GoogleMark() {
   );
 }
 
-function MicrosoftMark() {
+function MicrosoftMark({ size = "md" }: { size?: "sm" | "md" }) {
+  const dim = size === "sm" ? "h-7 w-7" : "h-9 w-9";
+  const svgDim = size === "sm" ? 16 : 20;
   return (
     <span
       aria-hidden
-      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950"
+      className={`inline-flex ${dim} shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-950`}
     >
-      <svg viewBox="0 0 24 24" width="20" height="20">
+      <svg viewBox="0 0 24 24" width={svgDim} height={svgDim}>
         <rect x="1" y="1" width="10" height="10" fill="#F25022" />
         <rect x="13" y="1" width="10" height="10" fill="#7FBA00" />
         <rect x="1" y="13" width="10" height="10" fill="#00A4EF" />
@@ -505,8 +777,7 @@ function ProviderHelp() {
             <strong>Heads up:</strong> many corporate Microsoft 365 tenants
             disable calendar publishing by IT policy. If{" "}
             <em>Publish a calendar</em> is missing or greyed out, ask your
-            admin or use a personal Outlook.com account — we&apos;ll add OAuth
-            login (which doesn&apos;t need publishing) in a later release.
+            admin or use a personal Outlook.com account.
           </Alert>
         </ProviderHelpCard>
 
