@@ -49,6 +49,7 @@ function ApiTokensPageInner() {
   const [tokens, setTokens] = useState<McpToken[]>([]);
   const [scopeChoices, setScopeChoices] = useState<McpTokenScopeChoice[]>(MCP_SCOPE_CHOICES_FALLBACK);
   const [justCreated, setJustCreated] = useState<McpTokenCreated | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [callsModal, setCallsModal] = useState<{
     token: McpToken;
     calls: McpTokenCall[] | null;
@@ -62,17 +63,36 @@ function ApiTokensPageInner() {
         return;
       }
       setEmail(session.data?.user?.email ?? "");
-      const [tkns, choices] = await Promise.all([
-        listMcpTokens(),
-        listMcpTokenScopes().catch((err) => {
-          console.error("[mcp-tokens] Failed to load scope choices, using fallback:", err);
-          return MCP_SCOPE_CHOICES_FALLBACK;
-        }),
-      ]);
-      setTokens(tkns);
-      setScopeChoices(choices);
+      try {
+        const [tkns, choices] = await Promise.all([
+          listMcpTokens(),
+          listMcpTokenScopes().catch((err) => {
+            console.error("[mcp-tokens] Failed to load scope choices, using fallback:", err);
+            return MCP_SCOPE_CHOICES_FALLBACK;
+          }),
+        ]);
+        setTokens(tkns);
+        setScopeChoices(choices);
+      } catch (err) {
+        // Distinguish auth failure (session expired mid-request) from
+        // every other error. Only an explicit 401 means re-login will help;
+        // 404 (endpoint not deployed), 5xx (backend down), network / parse
+        // errors must NOT redirect — that produced an infinite login loop
+        // whenever the backend was unreachable for any reason.
+        if (err instanceof McpTokenApiError && err.status === 401) {
+          router.replace("/auth/login");
+          return;
+        }
+        console.error("[mcp-tokens] Failed to load tokens:", err);
+        setLoadError(describeLoadError(err));
+      }
       setLoaded(true);
-    })().catch(() => router.replace("/auth/login"));
+    })().catch((err) => {
+      // Reached only if getSession() itself throws — treat as hard
+      // session failure and send to login.
+      console.error("[mcp-tokens] Session check failed:", err);
+      router.replace("/auth/login");
+    });
   }, [router]);
 
   const onTokenCreated = useCallback((created: McpTokenCreated) => {
@@ -131,6 +151,21 @@ function ApiTokensPageInner() {
         </div>
 
         <SettingsNav />
+
+        {/* Load error — shown instead of forcing a login redirect when the
+            tokens list fails for a non-auth reason (backend 404, 5xx, etc.). */}
+        {loadError && (
+          <div
+            role="alert"
+            className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
+          >
+            <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">Couldn&apos;t load your tokens</p>
+              <p className="mt-0.5">{loadError}</p>
+            </div>
+          </div>
+        )}
 
         {/* Raw token shown once after creation */}
         {justCreated && (
@@ -642,4 +677,20 @@ function relativeTime(iso: string): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
+}
+
+export function describeLoadError(err: unknown): string {
+  if (err instanceof McpTokenApiError) {
+    if (err.status === 404) {
+      return "The API tokens service is not available on this deployment yet. If you just updated Slotly, the backend may still be rolling out — try again in a minute.";
+    }
+    if (err.status >= 500) {
+      return `Slotly backend returned ${err.status}. Try reloading in a minute; if it persists, check the status page.`;
+    }
+    return `Request failed (HTTP ${err.status}). ${err.message}`;
+  }
+  if (err instanceof Error) {
+    return `Could not load tokens: ${err.message}`;
+  }
+  return "Could not load tokens.";
 }
