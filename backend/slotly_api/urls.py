@@ -24,4 +24,5 @@ urlpatterns = [
     path("api/", include("apps.availability.urls")),
     path("api/", include("apps.connections.urls")),
     path("api/", include("apps.scheduling.urls")),
+    path("mcp/v1/", include("apps.mcp.urls")),
 ]
