@@ -95,6 +95,7 @@ export default function PrivacyPage() {
             <p>Specifically, Google data is used only to:</p>
             <ul className="ml-5 list-disc space-y-1">
               <li>Read free/busy times from your Google Calendar to compute your availability.</li>
+              <li>List the calendars on your Google account so you can pick which one Slotly writes new events into. We read only the calendar list, never event contents, through this scope.</li>
               <li>Create events in the calendar you selected as the write target, when you or a visitor books a meeting.</li>
               <li>Display your name, email, and avatar (from Google userinfo) in your Slotly profile.</li>
             </ul>
