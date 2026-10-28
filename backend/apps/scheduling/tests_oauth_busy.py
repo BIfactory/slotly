@@ -181,6 +181,88 @@ class SyncOneOAuthAccountGoogleTests(TestCase):
         self.assertTrue(result.get("skipped"))
 
 
+# ---------------------------------------------------------------------------
+# Multi-account cascade + per-account isolation tests (Task 3)
+# ---------------------------------------------------------------------------
+
+class MultiAccountIsolationTests(TestCase):
+    """Review Focus: multi-account per user (post-PR #8)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="dave@x.com", password="x" * 12)
+        self.g1 = GoogleAccount.objects.create(
+            user=self.user,
+            google_email="dave@gmail.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        self.g2 = GoogleAccount.objects.create(
+            user=self.user,
+            google_email="dave@work.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    def _create_window(self, account, calendar_id="primary"):
+        now = datetime.now(timezone.utc)
+        return OAuthBusyWindow.objects.create(
+            user=self.user,
+            provider="google",
+            google_account=account,
+            calendar_id=calendar_id,
+            starts_at=now,
+            ends_at=now + timedelta(hours=1),
+        )
+
+    def test_delete_account_a_keeps_account_b_rows(self):
+        """Deleting g1 must not affect g2's OAuthBusyWindow rows."""
+        self._create_window(self.g1, "primary")
+        self._create_window(self.g1, "other@gmail.com")
+        self._create_window(self.g2, "primary")  # must survive
+
+        self.g1.delete()
+
+        remaining = list(OAuthBusyWindow.objects.all())
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].google_account_id, self.g2.pk)
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    @patch("apps.scheduling.google_client.fetch_freebusy")
+    def test_idempotency_run_twice_same_count(self, mock_freebusy, mock_calendars):
+        """Running sync_one_oauth_account twice for the same account
+        produces the same OAuthBusyWindow count (atomic delete+insert).
+        """
+        mock_calendars.return_value = [{"id": "primary"}]
+        mock_freebusy.return_value = [_make_busy("primary"), _make_busy("primary", hours_from_now=4)]
+
+        sync_one_oauth_account("google", self.g1.pk)
+        count_after_first = OAuthBusyWindow.objects.filter(google_account=self.g1).count()
+
+        sync_one_oauth_account("google", self.g1.pk)
+        count_after_second = OAuthBusyWindow.objects.filter(google_account=self.g1).count()
+
+        self.assertEqual(count_after_first, count_after_second)
+        self.assertEqual(count_after_second, 2)
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    @patch("apps.scheduling.google_client.fetch_freebusy")
+    def test_two_accounts_synced_independently(self, mock_freebusy, mock_calendars):
+        """Each account's sync writes only to its own rows; other account unaffected."""
+        mock_calendars.return_value = [{"id": "primary"}]
+        mock_freebusy.side_effect = [
+            [_make_busy("primary")],       # g1's call
+            [_make_busy("primary"), _make_busy("primary", hours_from_now=5)],  # g2's call
+        ]
+
+        sync_one_oauth_account("google", self.g1.pk)
+        sync_one_oauth_account("google", self.g2.pk)
+
+        self.assertEqual(OAuthBusyWindow.objects.filter(google_account=self.g1).count(), 1)
+        self.assertEqual(OAuthBusyWindow.objects.filter(google_account=self.g2).count(), 2)
+
+
 class SyncOneOAuthAccountMicrosoftTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="carol@x.com", password="x" * 12)
