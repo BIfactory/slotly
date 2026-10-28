@@ -61,6 +61,21 @@ logger = logging.getLogger(__name__)
 _STATE_SALT = "scheduling.google_oauth.state"
 _STATE_MAX_AGE = 60 * 10  # 10 minutes is plenty for a consent screen round-trip
 
+# ────────────────────────────────────────────────────────────────────────────
+# Module-level sentinel exception used by _upsert_*_account helpers to
+# signal an over-cap creation that must be rolled back atomically.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TooManyAccountsError(Exception):
+    """Raised inside the atomic upsert block when a newly-created account
+    would push the user past the 10-account cap.  The atomic block
+    automatically rolls back the INSERT; the caller redirects to
+    ?error=too_many_accounts."""
+    def __init__(self, provider: str):
+        self.provider = provider
+        super().__init__(f"too_many_accounts:{provider}")
+
 
 def _signer() -> TimestampSigner:
     return TimestampSigner(salt=_STATE_SALT)
@@ -152,6 +167,13 @@ def _upsert_google_account(
                 google_email=google_email[:254],
                 defaults=defaults,
             )
+            # Safety net for concurrent OAuth callbacks at cap: both callers
+            # can pass the pre-check outside this block, so we recount inside
+            # the atomic to catch the race.  If we just created the 11th row
+            # we raise here — the atomic block rolls back the INSERT before
+            # the exception propagates.
+            if created and GoogleAccount.objects.filter(user=user).count() > 10:
+                raise TooManyAccountsError("google")
     except IntegrityError:
         # Race: another request already inserted the row between our SELECT
         # and INSERT.  Fall back to a plain get+update.
@@ -201,6 +223,10 @@ def _upsert_microsoft_account(
                 microsoft_email=microsoft_email[:254],
                 defaults=defaults,
             )
+            # Same atomic-recount safety net as for Google (concurrent callback
+            # race at cap).
+            if created and MicrosoftAccount.objects.filter(user=user).count() > 10:
+                raise TooManyAccountsError("microsoft")
     except IntegrityError:
         account = MicrosoftAccount.objects.get(user=user, microsoft_email=microsoft_email[:254])
         for k, v in defaults.items():
@@ -337,14 +363,17 @@ def oauth_callback(request: HttpRequest) -> HttpResponseRedirect:
     ):
         return _frontend_return("error", reason="too_many_accounts")
 
-    _upsert_google_account(
-        user,
-        google_email=google_email,
-        access_token=access_token,
-        refresh_token_encrypted=refresh_encrypted,
-        expires_at=expires_at,
-        scope=token_payload.get("scope", ""),
-    )
+    try:
+        _upsert_google_account(
+            user,
+            google_email=google_email,
+            access_token=access_token,
+            refresh_token_encrypted=refresh_encrypted,
+            expires_at=expires_at,
+            scope=token_payload.get("scope", ""),
+        )
+    except TooManyAccountsError:
+        return _frontend_return("error", reason="too_many_accounts")
     # Anon flows go to /profile (welcome / next-step) rather than
     # /settings/integrations, which is meant for users who were mid-config.
     return _frontend_return("connected", email=google_email, anon="1" if anon else "0")
@@ -586,14 +615,17 @@ def microsoft_oauth_callback(request: HttpRequest) -> HttpResponseRedirect:
     ):
         return _frontend_return("error", provider="microsoft", reason="too_many_accounts")
 
-    _upsert_microsoft_account(
-        user,
-        microsoft_email=ms_email,
-        access_token=access_token,
-        refresh_token_encrypted=refresh_encrypted,
-        expires_at=expires_at,
-        scope=token_payload.get("scope", ""),
-    )
+    try:
+        _upsert_microsoft_account(
+            user,
+            microsoft_email=ms_email,
+            access_token=access_token,
+            refresh_token_encrypted=refresh_encrypted,
+            expires_at=expires_at,
+            scope=token_payload.get("scope", ""),
+        )
+    except TooManyAccountsError:
+        return _frontend_return("error", provider="microsoft", reason="too_many_accounts")
     return _frontend_return(
         "connected",
         provider="microsoft",
@@ -2197,14 +2229,20 @@ def _pick_write_provider(user) -> _WriteProvider | None:
         .first()
     )
     if default is None:
+        # Use get_or_create to be race-safe: two concurrent callers can both
+        # see default=None and race to create the row (OneToOneField unique).
         g = GoogleAccount.objects.filter(user=user).first()
         if g is not None:
-            default = WriteCalendarDefault.objects.create(user=user, google_account=g)
+            default, _ = WriteCalendarDefault.objects.get_or_create(
+                user=user, defaults={"google_account": g}
+            )
         else:
             m = MicrosoftAccount.objects.filter(user=user).first()
             if m is None:
                 return None
-            default = WriteCalendarDefault.objects.create(user=user, microsoft_account=m)
+            default, _ = WriteCalendarDefault.objects.get_or_create(
+                user=user, defaults={"microsoft_account": m}
+            )
 
     if default.google_account_id is not None:
         g = default.google_account
