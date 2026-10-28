@@ -56,14 +56,30 @@ class _WriteProvider:
     imports and re-exports) take effect for tests of views that use the
     old views._pick_write_provider.  For services-layer calls, patch
     ``apps.scheduling.google_client.create_calendar_event`` directly.
+
+    ``account_id`` is the DB PK of the specific GoogleAccount or
+    MicrosoftAccount to use for credentials.  It is injected into every
+    create_event / delete_event call so get_credentials(user, account_id)
+    resolves the right token in multi-account setups.
     """
 
-    def __init__(self, name: str, write_calendar_id: str, _backend: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        write_calendar_id: str,
+        _backend: str,
+        account_id: int | None = None,
+    ) -> None:
         self.name = name
         self.write_calendar_id = write_calendar_id
         self._backend = _backend  # "google" or "microsoft"
+        self.account_id = account_id
 
     def create_event(self, *args: Any, **kwargs: Any) -> Any:
+        # Inject account_id so the client's get_credentials call uses the
+        # right token (multi-account safe).
+        if self.account_id is not None:
+            kwargs.setdefault("account_id", self.account_id)
         if self._backend == "google":
             from . import google_client as _gc
             return _gc.create_calendar_event(*args, **kwargs)
@@ -71,6 +87,8 @@ class _WriteProvider:
         return _ms.create_calendar_event(*args, **kwargs)
 
     def delete_event(self, *args: Any, **kwargs: Any) -> Any:
+        if self.account_id is not None:
+            kwargs.setdefault("account_id", self.account_id)
         if self._backend == "google":
             from . import google_client as _gc
             return _gc.delete_calendar_event(*args, **kwargs)
@@ -80,26 +98,48 @@ class _WriteProvider:
 
 def _pick_write_provider(user) -> _WriteProvider | None:
     """Choose which OAuth-connected provider should host the new event.
-    Prefers Google when both are connected — arbitrary but stable, and
-    the user can effectively override by disconnecting the one they don't
-    want us writing into. Returns None when neither is connected."""
-    from .models import GoogleAccount, MicrosoftAccount
 
-    g = GoogleAccount.objects.filter(user=user).only("write_calendar_id").first()
-    if g is not None:
+    Reads ``WriteCalendarDefault`` for the user.  If no default exists but
+    accounts do, auto-elects the first available (Google-preferred) and
+    persists a new WriteCalendarDefault row — keeps existing tests passing
+    because they create accounts but don't create defaults.
+
+    Returns None when no accounts are connected.
+    """
+    from .models import WriteCalendarDefault, GoogleAccount, MicrosoftAccount
+
+    default = (
+        WriteCalendarDefault.objects
+        .filter(user=user)
+        .select_related("google_account", "microsoft_account")
+        .first()
+    )
+    if default is None:
+        # Auto-elect first available account (Google preferred) + persist.
+        g = GoogleAccount.objects.filter(user=user).first()
+        if g is not None:
+            default = WriteCalendarDefault.objects.create(user=user, google_account=g)
+        else:
+            m = MicrosoftAccount.objects.filter(user=user).first()
+            if m is None:
+                return None
+            default = WriteCalendarDefault.objects.create(user=user, microsoft_account=m)
+
+    if default.google_account_id is not None:
+        g = default.google_account
         return _WriteProvider(
             name="google",
             write_calendar_id=g.write_calendar_id or "primary",
             _backend="google",
+            account_id=default.google_account_id,
         )
-    m = MicrosoftAccount.objects.filter(user=user).only("write_calendar_id").first()
-    if m is not None:
-        return _WriteProvider(
-            name="microsoft",
-            write_calendar_id=m.write_calendar_id,  # empty = primary
-            _backend="microsoft",
-        )
-    return None
+    m = default.microsoft_account
+    return _WriteProvider(
+        name="microsoft",
+        write_calendar_id=m.write_calendar_id,  # empty = primary
+        _backend="microsoft",
+        account_id=default.microsoft_account_id,
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────

@@ -259,12 +259,16 @@ def create_calendar_event(
     attendees: list[str],
     include_online_meeting: bool = True,
     location: str = "",
+    account_id: int | None = None,
 ) -> dict:
     """Create an event on ``calendar_id`` (empty = primary calendar) and
     invite ``attendees``. When ``include_online_meeting`` is True (the
     "always online" default), Graph auto-generates a Teams meeting link.
     Graph sends the invite email automatically for events with attendees —
-    no ``sendUpdates`` equivalent needed."""
+    no ``sendUpdates`` equivalent needed.
+
+    ``account_id`` selects a specific MicrosoftAccount for multi-account users.
+    """
     payload: dict = {
         "subject": summary,
         "body": {
@@ -294,7 +298,7 @@ def create_calendar_event(
         payload["onlineMeetingProvider"] = "teamsForBusiness"
 
     endpoint = "/me/events" if not calendar_id else f"/me/calendars/{calendar_id}/events"
-    creds = get_credentials(user)
+    creds = get_credentials(user, account_id)
     with _bearer(creds) as client:
         r = client.post(endpoint, json=payload)
     if r.status_code not in (200, 201):
@@ -302,11 +306,20 @@ def create_calendar_event(
     return r.json()
 
 
-def delete_calendar_event(user, *, calendar_id: str, event_id: str) -> None:
+def delete_calendar_event(
+    user,
+    *,
+    calendar_id: str,
+    event_id: str,
+    account_id: int | None = None,
+) -> None:
     """Delete an event via Graph. Graph auto-emails a cancellation to
-    attendees. 404 is treated as success (event already gone)."""
+    attendees. 404 is treated as success (event already gone).
+
+    ``account_id`` selects a specific MicrosoftAccount for multi-account users.
+    """
     endpoint = f"/me/events/{event_id}"  # /me/events works even for non-primary calendars
-    creds = get_credentials(user)
+    creds = get_credentials(user, account_id)
     with _bearer(creds) as client:
         r = client.delete(endpoint)
     if r.status_code in (200, 204, 404):

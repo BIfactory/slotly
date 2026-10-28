@@ -266,6 +266,7 @@ def create_calendar_event(
     attendees: list[str],
     include_online_meeting: bool = True,
     location: str = "",
+    account_id: int | None = None,
 ) -> dict:
     """
     Create an event on ``calendar_id`` on behalf of ``user`` and email an
@@ -280,6 +281,9 @@ def create_calendar_event(
 
     Times must be ISO 8601 datetimes. ``time_zone`` is the IANA name that
     Google displays alongside — pass the user's app TZ for consistency.
+
+    ``account_id``, when provided, selects a specific GoogleAccount row so
+    multi-account users hit the right token.
     """
     import uuid as _uuid
 
@@ -307,7 +311,7 @@ def create_calendar_event(
         }
         params["conferenceDataVersion"] = "1"
 
-    creds = get_credentials(user)
+    creds = get_credentials(user, account_id)
     with bearer_session(creds) as client:
         r = client.post(
             f"/calendar/v3/calendars/{calendar_id}/events",
@@ -319,11 +323,20 @@ def create_calendar_event(
     return r.json()
 
 
-def delete_calendar_event(user, *, calendar_id: str, event_id: str) -> None:
+def delete_calendar_event(
+    user,
+    *,
+    calendar_id: str,
+    event_id: str,
+    account_id: int | None = None,
+) -> None:
     """Delete an event and notify attendees. Treats 404/410 as success —
     the event was already gone (deleted from Google directly or expired),
-    which is the state the caller wanted."""
-    creds = get_credentials(user)
+    which is the state the caller wanted.
+
+    ``account_id`` selects a specific GoogleAccount for multi-account users.
+    """
+    creds = get_credentials(user, account_id)
     with bearer_session(creds) as client:
         r = client.delete(
             f"/calendar/v3/calendars/{calendar_id}/events/{event_id}",
