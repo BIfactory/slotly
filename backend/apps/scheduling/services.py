@@ -177,20 +177,20 @@ def _pick_write_provider(user, provider: str | None = None) -> _WriteProvider | 
         )
 
     # provider is None → primary (Google > MS), back-compat.
-    if default.google_account_id is not None:
-        g = default.google_account
+    if default.has_default("google"):
+        g = default.default_write_target("google")
         return _WriteProvider(
             name="google",
             write_calendar_id=g.write_calendar_id or "primary",
             _backend="google",
-            account_id=default.google_account_id,
+            account_id=g.pk,
         )
-    m = default.microsoft_account
+    m = default.default_write_target("microsoft")
     return _WriteProvider(
         name="microsoft",
         write_calendar_id=m.write_calendar_id,  # empty = primary
         _backend="microsoft",
-        account_id=default.microsoft_account_id,
+        account_id=m.pk,
     )
 
 

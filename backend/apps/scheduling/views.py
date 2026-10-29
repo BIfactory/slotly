@@ -919,7 +919,7 @@ class CalendarAccountDetailView(APIView):
 
             # Persist or delete depending on whether the other FK is still
             # set.  Both-null would violate the CheckConstraint.
-            if default.google_account_id is None and default.microsoft_account_id is None:
+            if not default.has_default("google") and not default.has_default("microsoft"):
                 # After the update both FKs will be null — delete the row to
                 # satisfy the at-least-one constraint, then delete the account.
                 default.delete()
@@ -2384,15 +2384,15 @@ def _pick_write_provider(user, provider: str | None = None) -> _WriteProvider | 
         )
 
     # provider is None → primary (Google > MS), back-compat.
-    if default.google_account_id is not None:
-        g = default.google_account
+    if default.has_default("google"):
+        g = default.default_write_target("google")
         return _WriteProvider(
             name="google",
             write_calendar_id=g.write_calendar_id or "primary",
             create_event=create_calendar_event,
             delete_event=delete_calendar_event,
         )
-    m = default.microsoft_account
+    m = default.default_write_target("microsoft")
     return _WriteProvider(
         name="microsoft",
         write_calendar_id=m.write_calendar_id,
