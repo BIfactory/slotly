@@ -1750,6 +1750,7 @@ def _serialize_meeting_type(t: MeetingType) -> dict:
         "display_order": t.display_order,
         "questions": list(t.questions or []),
         "redirect_url": t.redirect_url,
+        "meeting_link_kind": t.meeting_link_kind,
     }
 
 
@@ -1848,6 +1849,13 @@ def _validate_meeting_type_payload(
         if url and not (url.startswith("https://") or url.startswith("http://")):
             return {}, {"redirect_url": "Must start with http:// or https://."}
         cleaned["redirect_url"] = url
+
+    if "meeting_link_kind" in body:
+        mlk = str(_get("meeting_link_kind") or "").strip()
+        from .models import MeetingLinkKind as _MLK
+        if mlk not in _MLK.values:
+            return {}, {"meeting_link_kind": "invalid"}
+        cleaned["meeting_link_kind"] = mlk
 
     if "questions" in body:
         raw_questions = _get("questions") or []

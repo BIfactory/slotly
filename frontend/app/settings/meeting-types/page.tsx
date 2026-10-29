@@ -22,6 +22,7 @@ import {
   deleteMeetingType,
   listMeetingTypes,
   updateMeetingType,
+  type MeetingLinkKind,
   type MeetingType,
   type MeetingTypeQuestion,
 } from "@/lib/meeting-types";
@@ -225,6 +226,7 @@ function EditorModal({
   const [color, setColor] = useState(initial?.color ?? PRESET_COLORS[0]);
   const [questions, setQuestions] = useState<MeetingTypeQuestion[]>(initial?.questions ?? []);
   const [redirectUrl, setRedirectUrl] = useState(initial?.redirect_url ?? "");
+  const [meetingLinkKind, setMeetingLinkKind] = useState<MeetingLinkKind>(initial?.meeting_link_kind ?? "auto");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -262,6 +264,7 @@ function EditorModal({
           .map((q) => ({ ...q, label: q.label.trim() }))
           .filter((q) => q.label.length > 0),
         redirect_url: redirectUrl.trim(),
+        meeting_link_kind: meetingLinkKind,
       };
       const saved = isNew
         ? await createMeetingType(payload)
@@ -406,6 +409,25 @@ function EditorModal({
             When set, the visitor is sent here after booking instead of
             seeing the built-in confirmation — useful for a &quot;thank
             you&quot; page or a conversion pixel.
+          </p>
+        </div>
+
+        <div className="space-y-1">
+          <Label htmlFor="mt-meeting-link-kind">Meeting link</Label>
+          <select
+            id="mt-meeting-link-kind"
+            value={meetingLinkKind}
+            onChange={(e) => setMeetingLinkKind(e.target.value as MeetingLinkKind)}
+            className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+          >
+            <option value="auto">Auto (default)</option>
+            <option value="google_meet">Google Meet</option>
+            <option value="teams">Microsoft Teams</option>
+            <option value="none">No video link</option>
+          </select>
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            Which video-link type to attach to bookings using this meeting
+            type. Visitors can still override this when booking.
           </p>
         </div>
 

@@ -936,6 +936,79 @@ class MeetingTypeTests(TestCase):
         self.assertTrue(MeetingType.objects.filter(pk=t.pk).exists())
 
 
+class MeetingTypeMeetingLinkKindAPITests(TestCase):
+    """POST + PATCH /api/meeting-types accept and persist meeting_link_kind."""
+
+    def setUp(self):
+        UserModel = get_user_model()
+        self.host = UserModel.objects.create_user(email="host@test.local", password="pwpw12345xyz")
+        self.client = APIClient()
+        self.client.force_authenticate(self.host)
+
+    def test_create_meeting_type_persists_meeting_link_kind(self):
+        resp = self.client.post(
+            reverse("meeting-types-list"),
+            {"name": "Demo", "duration_min": 30, "meeting_link_kind": "teams"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        mt = MeetingType.objects.get(host=self.host, slug="demo")
+        self.assertEqual(mt.meeting_link_kind, "teams")
+
+    def test_patch_meeting_type_updates_meeting_link_kind(self):
+        t = MeetingType.objects.create(
+            host=self.host, name="Chat", slug="chat", duration_min=30,
+        )
+        resp = self.client.patch(
+            reverse("meeting-types-detail", args=[t.pk]),
+            {"meeting_link_kind": "google_meet"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        t.refresh_from_db()
+        self.assertEqual(t.meeting_link_kind, "google_meet")
+
+    def test_invalid_meeting_link_kind_rejected(self):
+        resp = self.client.post(
+            reverse("meeting-types-list"),
+            {"name": "Zoom", "duration_min": 30, "meeting_link_kind": "zoom"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("meeting_link_kind", resp.json())
+
+    def test_meeting_type_serializer_includes_meeting_link_kind(self):
+        t = MeetingType.objects.create(
+            host=self.host, name="Chat", slug="chat", duration_min=30,
+            meeting_link_kind="none",
+        )
+        resp = self.client.get(reverse("meeting-types-list"))
+        self.assertEqual(resp.status_code, 200)
+        types = resp.json()["types"]
+        match = next(x for x in types if x["id"] == t.pk)
+        self.assertEqual(match["meeting_link_kind"], "none")
+
+    def test_create_defaults_meeting_link_kind_to_auto(self):
+        resp = self.client.post(
+            reverse("meeting-types-list"),
+            {"name": "Auto Default", "duration_min": 15},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.json()["meeting_link_kind"], "auto")
+
+    def test_all_valid_values_accepted(self):
+        for i, value in enumerate(["auto", "google_meet", "teams", "none"]):
+            with self.subTest(value=value):
+                resp = self.client.post(
+                    reverse("meeting-types-list"),
+                    {"name": f"Type {i}", "duration_min": 30, "meeting_link_kind": value},
+                    format="json",
+                )
+                self.assertEqual(resp.status_code, 201, resp.content)
+                self.assertEqual(resp.json()["meeting_link_kind"], value)
+
+
 class MeetingTypeQuestionsTests(TestCase):
     """MeetingType.questions validation + public POST honors + validates
     custom_answers against the type's question schema."""
