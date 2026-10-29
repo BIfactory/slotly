@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Copy, KeyRound, X } from "lucide-react";
 import { AuthedHeader } from "@/components/AuthedHeader";
+import { SettingsLayout } from "@/components/SettingsLayout";
 import { SettingsNav } from "@/components/SettingsNav";
 import { CardSkeleton, ListSkeleton, PageSkeleton } from "@/components/Skeleton";
 import { Button, FormError, Input, Label } from "@/components/ui";
@@ -146,7 +147,7 @@ function ApiTokensPageInner() {
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <AuthedHeader email={email} />
 
-      <main className="mx-auto max-w-5xl space-y-6 px-6 py-10">
+      <SettingsLayout width="wide">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             API tokens
@@ -158,6 +159,8 @@ function ApiTokensPageInner() {
         </div>
 
         <SettingsNav />
+
+        <McpEndpointCard />
 
         {/* Load error — shown instead of forcing a login redirect when the
             tokens list fails for a non-auth reason (backend 404, 5xx, etc.). */}
@@ -196,7 +199,7 @@ function ApiTokensPageInner() {
           </header>
           <TokenTable tokens={tokens} onRevoke={onRevoke} onViewCalls={onViewCalls} />
         </section>
-      </main>
+      </SettingsLayout>
 
       {/* Calls modal */}
       {callsModal && (
@@ -281,6 +284,53 @@ function RawTokenBanner({ raw, onDismiss }: { raw: string; onDismiss: () => void
         </button>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MCP endpoint card
+// ---------------------------------------------------------------------------
+
+const MCP_ENDPOINT_URL = "https://api.slotly.team/mcp/v1";
+
+function McpEndpointCard() {
+  const [copied, setCopied] = useState(false);
+
+  async function onCopy() {
+    try {
+      await navigator.clipboard.writeText(MCP_ENDPOINT_URL);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900 dark:bg-blue-950/40">
+      <h2 className="text-base font-semibold text-blue-900 dark:text-blue-100">
+        MCP endpoint URL
+      </h2>
+      <p className="mt-1 text-sm text-blue-800 dark:text-blue-200">
+        Paste this URL into your MCP client (Personal Hub, Claude Desktop, …) along with a token below.
+      </p>
+      <div className="mt-3 flex items-center gap-2">
+        <code className="flex-1 overflow-x-auto rounded-md border border-blue-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-blue-800 dark:bg-zinc-900 dark:text-zinc-50">
+          {MCP_ENDPOINT_URL}
+        </code>
+        <button
+          type="button"
+          onClick={onCopy}
+          className="inline-flex items-center gap-1.5 rounded-md border border-blue-300 bg-white px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:bg-zinc-900 dark:text-blue-300 dark:hover:bg-blue-950/30"
+        >
+          <Copy size={14} aria-hidden />
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <p className="mt-2 text-xs text-blue-700 dark:text-blue-300">
+        Spec version 2024-11-05 · Bearer token auth · Rate limit 60 req/min (read) / 20 req/min (write).
+      </p>
+    </section>
   );
 }
 
