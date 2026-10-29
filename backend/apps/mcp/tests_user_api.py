@@ -152,6 +152,46 @@ class TokenRevokeTests(TestCase):
         self.assertEqual(res.status_code, 404)
 
 
+class TokenPurgeTests(TestCase):
+    def setUp(self):
+        self.alice = make_user(30)
+        self.bob = make_user(31)
+        self.client.force_login(self.alice)
+
+    def test_purge_requires_revoked_token(self):
+        token, _ = APIToken.create_for_user(self.alice, "active", ["list_teams"])
+        res = self.client.delete(f"/api/mcp/tokens/{token.pk}/purge")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.json()["error"], "token_still_active")
+        # Row still exists.
+        self.assertTrue(APIToken.objects.filter(pk=token.pk).exists())
+
+    def test_purge_deletes_revoked_token_and_calls(self):
+        token, _ = APIToken.create_for_user(self.alice, "to-purge", ["list_teams"])
+        # Create a call row so we can verify CASCADE.
+        MCPCall.objects.create(token=token, capability="list_teams", status="ok", duration_ms=12)
+        token.revoked_at = timezone.now()
+        token.save(update_fields=["revoked_at"])
+
+        res = self.client.delete(f"/api/mcp/tokens/{token.pk}/purge")
+        self.assertEqual(res.status_code, 204)
+        self.assertFalse(APIToken.objects.filter(pk=token.pk).exists())
+        self.assertFalse(MCPCall.objects.filter(token_id=token.pk).exists())
+
+    def test_purge_other_users_token_is_404(self):
+        bob_token, _ = APIToken.create_for_user(self.bob, "bob-token", ["find_slots"])
+        bob_token.revoked_at = timezone.now()
+        bob_token.save(update_fields=["revoked_at"])
+        res = self.client.delete(f"/api/mcp/tokens/{bob_token.pk}/purge")
+        self.assertEqual(res.status_code, 404)
+        # Still exists — belongs to bob, untouched.
+        self.assertTrue(APIToken.objects.filter(pk=bob_token.pk).exists())
+
+    def test_purge_unknown_token_is_404(self):
+        res = self.client.delete("/api/mcp/tokens/999999/purge")
+        self.assertEqual(res.status_code, 404)
+
+
 class TokenCallsTests(TestCase):
     def setUp(self):
         self.alice = make_user(20)
