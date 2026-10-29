@@ -15,7 +15,44 @@ import uuid
 
 from django.conf import settings
 from django.db import models
-from django.db.models import CheckConstraint, Q, UniqueConstraint
+from django.db.models import CheckConstraint, Index, Q, UniqueConstraint
+
+
+class UserLocation(models.Model):
+    """Named location predefined by a user, e.g. "Kavárna U Fialek, Praha 2".
+
+    Users build a list of locations in /settings/locations and then pick one
+    when configuring a MeetingType (physical kind) or overriding the default on
+    the public booking page. The list is personal — two users may have
+    identically-named locations without conflict.
+
+    ``is_default`` flags the location Slotly should pre-select in pickers;
+    the "at most one default per user" invariant is enforced at the endpoint
+    layer (G2), not here.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="locations",
+    )
+    name = models.CharField(max_length=100)        # "Kavárna U Fialek"
+    address = models.CharField(max_length=400)      # "Vinohradská 42, Praha 2"
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "name"],
+                name="unique_location_name_per_user",
+            ),
+        ]
+        indexes = [Index(fields=["user", "is_default"])]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.user_id})"
 
 
 class GoogleAccount(models.Model):
