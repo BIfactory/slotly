@@ -1,6 +1,13 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState, type FormEvent } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Copy, KeyRound, X } from "lucide-react";
 import { AuthedHeader } from "@/components/AuthedHeader";
@@ -167,8 +174,10 @@ function ApiTokensPageInner() {
           </div>
         )}
 
-        {/* Raw token shown once after creation */}
-        {justCreated && (
+        {/* Raw token shown once after creation. Guard on the raw string
+            specifically — an empty banner would be worse than none, and the
+            create form surfaces a dedicated error for that corner case. */}
+        {justCreated?.token && (
           <RawTokenBanner raw={justCreated.token} onDismiss={() => setJustCreated(null)} />
         )}
 
@@ -207,6 +216,17 @@ function ApiTokensPageInner() {
 
 function RawTokenBanner({ raw, onDismiss }: { raw: string; onDismiss: () => void }) {
   const [copied, setCopied] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // The banner renders above the create form. After the user clicks "Create
+  // token" at the bottom of the form their viewport is on the submit button,
+  // so a banner that materialises above the fold can go unnoticed — the token
+  // appears in the Your tokens list and the user never sees the raw string.
+  // Scroll the banner into view and focus the copy region so screen readers
+  // and keyboard users also get a prompt.
+  useEffect(() => {
+    ref.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
 
   async function onCopy() {
     try {
@@ -219,7 +239,13 @@ function RawTokenBanner({ raw, onDismiss }: { raw: string; onDismiss: () => void
   }
 
   return (
-    <div className="rounded-xl border border-red-300 bg-red-50 p-5 dark:border-red-800/60 dark:bg-red-950/20">
+    <div
+      ref={ref}
+      role="alert"
+      aria-live="assertive"
+      data-testid="raw-token-banner"
+      className="rounded-xl border border-red-300 bg-red-50 p-5 dark:border-red-800/60 dark:bg-red-950/20"
+    >
       <div className="mb-3 flex items-start gap-2">
         <AlertTriangle
           size={18}
@@ -303,6 +329,17 @@ function CreateTokenForm({
     setSubmitting(true);
     try {
       const created = await createMcpToken({ name, scopes: [...scopes] });
+      // Defensive: a 201 that somehow lacks `token` would silently appear as
+      // a token in the list with no raw string ever shown. Surface it loudly
+      // so the user can revoke and retry instead of being left with an
+      // unusable token.
+      if (!created.token) {
+        setError(
+          "Token was created but the server did not return the raw string. Revoke this token and try again.",
+        );
+        onCreated(created);
+        return;
+      }
       onCreated(created);
       setName("");
       setScopes(new Set());
