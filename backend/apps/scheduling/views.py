@@ -1493,31 +1493,18 @@ def _host_availability_for_reschedule(host) -> dict:
     lets the visitor reschedule even if the host has since turned off
     their public booking link."""
     from datetime import timedelta as _td
-    from django.db.models import Q as _Q
-    from apps.availability.models import Unavailability as _Un
-    from apps.calendars.models import CalendarEvent as _CE
 
     from apps.accounts.views import _holidays_in_range, _inflate_busy
+    from apps.search.queries import busy_intervals_for_users as _busy_for_users
 
     now = djtz.now()
     window_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     window_end = window_start + _td(days=56)
 
-    busy: list[tuple] = []
-    for ev in _CE.objects.filter(
-        _Q(transp=_CE.Transparency.OPAQUE) | _Q(is_all_day=True),
-        calendar__owner_id=host.pk,
-        calendar__include_in_busy=True,
-        dtstart__lt=window_end,
-        dtend__gt=window_start,
-    ).exclude(status=_CE.Status.CANCELLED).values("dtstart", "dtend"):
-        busy.append((ev["dtstart"], ev["dtend"]))
-    for u in _Un.objects.filter(
-        user_id=host.pk,
-        starts_at__lt=window_end,
-        ends_at__gt=window_start,
-    ).values("starts_at", "ends_at"):
-        busy.append((u["starts_at"], u["ends_at"]))
+    # Union of CalendarEvent + OAuthBusyWindow + Unavailability via shared helper.
+    # Previously only CalendarEvent + Unavailability were read here, mirroring
+    # the same CalendarEvent-only bug as PublicProfileView.
+    busy = _busy_for_users([host.pk], window_start, window_end).get(host.pk, [])
     busy = _inflate_busy(busy, host.buffer_before_min, host.buffer_after_min)
 
     return {
