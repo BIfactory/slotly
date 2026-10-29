@@ -460,6 +460,56 @@ class CreateEventNoAttendeesTest(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# authorize_url parameter lockdown — guards accidental OAuth URL contract drift
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    GOOGLE_OAUTH_CLIENT_ID="test-google-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET="test-google-secret",
+    GOOGLE_OAUTH_REDIRECT_URI="http://localhost:8000/api/oauth/google/callback",
+    GOOGLE_OAUTH_SCOPES=["https://www.googleapis.com/auth/calendar"],
+)
+class GoogleAuthorizeUrlTest(TestCase):
+    """Pin the required query-string parameters of Google's authorize_url."""
+
+    def test_google_authorize_url_required_params(self):
+        from urllib.parse import parse_qs, urlparse
+        from apps.scheduling.google_client import authorize_url
+
+        url = authorize_url("test-state-token")
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+
+        # OAuth contract: these values must be exactly as specified.
+        self.assertEqual(qs["response_type"], ["code"])
+        self.assertEqual(qs["access_type"], ["offline"])
+        self.assertEqual(qs["include_granted_scopes"], ["true"])
+        self.assertEqual(qs["state"], ["test-state-token"])
+
+
+@override_settings(
+    MICROSOFT_OAUTH_CLIENT_ID="test-ms-client-id",
+    MICROSOFT_OAUTH_CLIENT_SECRET="test-ms-secret",
+    MICROSOFT_OAUTH_REDIRECT_URI="http://localhost:8000/api/oauth/microsoft/callback",
+)
+class MicrosoftAuthorizeUrlTest(TestCase):
+    """Pin the required query-string parameters of Microsoft's authorize_url."""
+
+    def test_microsoft_authorize_url_required_params(self):
+        from urllib.parse import parse_qs, urlparse
+        from apps.scheduling.graph_client import authorize_url
+
+        url = authorize_url("test-ms-state")
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+
+        # OAuth contract: response_type=code is required for the auth code flow.
+        self.assertEqual(qs["response_type"], ["code"])
+        self.assertEqual(qs["state"], ["test-ms-state"])
+
+
+# ---------------------------------------------------------------------------
 # Task A2: _pick_write_provider provider kwarg
 # ---------------------------------------------------------------------------
 
@@ -740,7 +790,7 @@ class CreateBookingMeetingLinkKindTests(TestCase):
         WriteCalendarDefault.objects.create(user=self.host, google_account=g)
 
         start, end = _future_slot()
-        with self.assertRaises(Exception) as ctx:
+        with self.assertRaises(ValidationError) as ctx:
             create_booking(
                 self.host,
                 start=start,
@@ -749,7 +799,6 @@ class CreateBookingMeetingLinkKindTests(TestCase):
                 meeting_link_kind="teams",
             )
         # Expect a DRF ValidationError keyed on "meeting_link_kind".
-        from rest_framework.exceptions import ValidationError
         self.assertIsInstance(ctx.exception, ValidationError)
         self.assertIn("meeting_link_kind", ctx.exception.detail)
         self.assertIn("Microsoft", str(ctx.exception.detail["meeting_link_kind"]))

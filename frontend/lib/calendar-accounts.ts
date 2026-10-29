@@ -84,11 +84,27 @@ export async function disconnectAccount(id: string): Promise<void> {
   }
 }
 
-/** Update the write-calendar target for a single account. */
+/**
+ * Partial shape returned by PATCH /api/calendar-accounts/<id>.
+ * The backend returns ONLY {id, write_calendar_id} — not a full CalendarAccount.
+ * Callers must merge write_calendar_id onto existing state rather than replacing
+ * the whole account object.
+ */
+export type PatchWriteCalendarResult = {
+  id: string;
+  write_calendar_id: string;
+};
+
+/**
+ * Update the write-calendar target for a single account.
+ * Returns the partial update ({id, write_calendar_id}); caller merges
+ * write_calendar_id into existing state — do NOT spread the result over the
+ * full account object or fields like email/provider/is_default will be lost.
+ */
 export async function patchAccountWriteCalendar(
   id: string,
   writeCalendarId: string,
-): Promise<CalendarAccount> {
+): Promise<PatchWriteCalendarResult> {
   const res = await fetch(`/api/calendar-accounts/${encodeURIComponent(id)}`, {
     method: "PATCH",
     credentials: "include",
@@ -99,5 +115,5 @@ export async function patchAccountWriteCalendar(
     const body = (await res.json().catch(() => ({}))) as { detail?: string };
     throw new Error(body.detail ?? `HTTP ${res.status}`);
   }
-  return (await res.json()) as CalendarAccount;
+  return (await res.json()) as PatchWriteCalendarResult;
 }

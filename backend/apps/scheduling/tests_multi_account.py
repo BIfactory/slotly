@@ -421,6 +421,36 @@ class CalendarAccountsAPITests(TestCase):
         resp = self.client.delete(f"/api/calendar-accounts/g:{g_other.pk}")
         self.assertEqual(resp.status_code, 404)
 
+    def test_delete_non_default_account_wcd_untouched(self):
+        """Delete ms-B (not the default) when WCD has both FKs set.
+
+        Setup: one Google account (default) + two Microsoft accounts (ms-A is
+        default, ms-B is not).  WCD has google_account=g and
+        microsoft_account=ms_a.  Deleting ms-B must:
+        - remove ms-B from DB
+        - leave WCD completely untouched (both FKs still set)
+        - return 204
+        """
+        g = _make_google(self.user, email="alice@gmail.com")
+        ms_a = _make_microsoft(self.user, email="alice@outlook.com")
+        ms_b = _make_microsoft(self.user, email="alice.work@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=ms_a
+        )
+
+        resp = self.client.delete(f"/api/calendar-accounts/m:{ms_b.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        # ms-B is gone.
+        self.assertFalse(MicrosoftAccount.objects.filter(pk=ms_b.pk).exists())
+        # ms-A still exists.
+        self.assertTrue(MicrosoftAccount.objects.filter(pk=ms_a.pk).exists())
+
+        # WCD is completely untouched — both FKs still point to the originals.
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertEqual(wcd.google_account_id, g.pk)
+        self.assertEqual(wcd.microsoft_account_id, ms_a.pk)
+
     # ── patch write_calendar_id ───────────────────────────────────────────────
 
     def test_patch_write_calendar_id(self):
@@ -1021,7 +1051,7 @@ class PublicProfileHostProvidersTests(TestCase):
 
         r = self.client.get(f"/api/public/profile/{host.share_token}")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(sorted(r.data["host_providers"]), ["google", "microsoft"])
+        self.assertEqual(r.data["host_providers"], ["google", "microsoft"])
 
     def test_only_google_returns_google_list(self):
         host = self._make_host()

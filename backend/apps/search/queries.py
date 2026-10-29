@@ -14,9 +14,10 @@ Return type::
 The outer key is the user-id (int).  Each value is a sorted, merged list
 of (start, end) tz-aware UTC datetime tuples covering that user's busy
 intervals within [window_start, window_end).  Intervals are merged so that
-overlapping windows become one; adjacent-but-not-overlapping intervals stay
-separate (same semantics as the existing _merge_intervals helper in
-apps.search.views).
+overlapping *and* touching windows become one (``[10:00–11:00]`` +
+``[11:00–12:00]`` → ``[10:00–12:00]``).  The single merge implementation
+lives in ``_merge_intervals`` below; ``apps.search.views`` imports it from
+here.
 
 Callers that need an empty list for a user not yet seen in the result dict
 can use ``result.get(uid, [])``.

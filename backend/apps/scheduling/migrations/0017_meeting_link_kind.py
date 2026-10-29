@@ -9,7 +9,6 @@ compact and avoids an intermediate state where only one model has the field.
 Existing rows get "auto" via Django's column-level DEFAULT — no data migration
 step is needed.
 """
-import django.db.models.deletion
 from django.db import migrations, models
 
 

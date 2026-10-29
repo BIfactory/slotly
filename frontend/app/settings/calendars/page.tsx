@@ -207,7 +207,19 @@ function CalendarsPageInner() {
       return;
     try {
       await disconnectAccount(id);
+      // Optimistic removal so the row disappears immediately.
       setAccounts((prev) => prev.filter((a) => a.id !== id));
+      // Server auto-promotes the next same-provider account to default when the
+      // deleted one was the current default. Refetch to pick up the new
+      // is_default flags so the DefaultPickerCard and badge stay accurate.
+      try {
+        const refreshed = await listCalendarAccounts();
+        setAccounts(refreshed);
+      } catch {
+        // Primary action (disconnect) succeeded — swallow refetch failure so we
+        // don't show a misleading error banner. The optimistic filter is still
+        // correct re: deletion; only is_default may be stale until page reload.
+      }
     } catch (err) {
       setAccountsError(
         err instanceof Error ? err.message : "Couldn't disconnect account.",
@@ -219,8 +231,12 @@ function CalendarsPageInner() {
   const handlePatchWriteCalendar = useCallback(
     async (id: string, writeCalendarId: string) => {
       try {
-        const updated = await patchAccountWriteCalendar(id, writeCalendarId);
-        setAccounts((prev) => prev.map((a) => (a.id === id ? updated : a)));
+        const update = await patchAccountWriteCalendar(id, writeCalendarId);
+        setAccounts((prev) =>
+          prev.map((a) =>
+            a.id === id ? { ...a, write_calendar_id: update.write_calendar_id } : a,
+          ),
+        );
       } catch (err) {
         setAccountsError(
           err instanceof Error ? err.message : "Couldn't save calendar choice.",
@@ -303,11 +319,32 @@ function CalendarsPageInner() {
         <section className="space-y-3">
           <SectionHeading
             title="Connected calendar accounts"
-            subtitle="Sign in with Google or Microsoft — Slotly reads your free/busy and creates meetings with everyone invited. One account is your default for new bookings."
+            subtitle="Sign in with Google or Microsoft — Slotly reads your free/busy and creates meetings with everyone invited. Each provider has its own default. New bookings use the provider matching the selected meeting link (Google Meet / Teams)."
           />
 
           {accountsError && (
             <Banner kind="err">{accountsError}</Banner>
+          )}
+
+          {accounts.length > 0 && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <DefaultPickerCard
+                provider="google"
+                accounts={accounts.filter((a) => a.provider === "google")}
+                currentDefaultId={
+                  accounts.find((a) => a.provider === "google" && a.is_default)?.id ?? null
+                }
+                onSelect={handleSetDefault}
+              />
+              <DefaultPickerCard
+                provider="microsoft"
+                accounts={accounts.filter((a) => a.provider === "microsoft")}
+                currentDefaultId={
+                  accounts.find((a) => a.provider === "microsoft" && a.is_default)?.id ?? null
+                }
+                onSelect={handleSetDefault}
+              />
+            </div>
           )}
 
           {accounts.length === 0 ? (
@@ -315,7 +352,6 @@ function CalendarsPageInner() {
           ) : (
             <AccountsTable
               accounts={accounts}
-              onSetDefault={handleSetDefault}
               onDisconnect={handleDisconnect}
               onPatchWriteCalendar={handlePatchWriteCalendar}
             />
@@ -381,24 +417,21 @@ function EmptyAccountsPanel() {
 
 function AccountsTable({
   accounts,
-  onSetDefault,
   onDisconnect,
   onPatchWriteCalendar,
 }: {
   accounts: CalendarAccount[];
-  onSetDefault: (id: string) => Promise<void>;
   onDisconnect: (id: string) => Promise<void>;
   onPatchWriteCalendar: (id: string, writeCalendarId: string) => Promise<void>;
 }) {
   const rowProps = {
-    onSetDefault,
     onDisconnect,
     onPatchWriteCalendar,
   };
 
   return (
     <>
-      {/* ── Desktop (≥768px): standard 5-column table ── */}
+      {/* ── Desktop (≥768px): 4-column table (no Default column — picker above) ── */}
       <div className="hidden overflow-hidden rounded-xl border border-zinc-200 bg-white md:block dark:border-zinc-800 dark:bg-zinc-900">
         <table className="w-full text-sm">
           <thead>
@@ -408,9 +441,6 @@ function AccountsTable({
               </th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
                 Account
-              </th>
-              <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                Default
               </th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
                 Write calendar
@@ -440,12 +470,10 @@ function AccountsTable({
 
 function AccountRow({
   account,
-  onSetDefault,
   onDisconnect,
   onPatchWriteCalendar,
 }: {
   account: CalendarAccount;
-  onSetDefault: (id: string) => Promise<void>;
   onDisconnect: (id: string) => Promise<void>;
   onPatchWriteCalendar: (id: string, writeCalendarId: string) => Promise<void>;
 }) {
@@ -501,28 +529,22 @@ function AccountRow({
         )}
       </td>
 
-      {/* Email */}
+      {/* Email + optional default badge */}
       <td className="px-4 py-3">
-        <span className="font-medium text-zinc-900 dark:text-zinc-50">
-          {account.email}
-        </span>
-        <span className="ml-2 text-xs text-zinc-400 dark:text-zinc-500">
-          {account.provider === "google" ? "Google" : "Microsoft"}
-        </span>
-      </td>
-
-      {/* Default radio — scoped per provider so Google and Microsoft radios
-           form two independent groups and switching one doesn't clear the other. */}
-      <td className="px-4 py-3 text-center">
-        <input
-          type="radio"
-          name={account.provider === "google" ? "google-default" : "microsoft-default"}
-          value={account.id}
-          checked={account.is_default}
-          onChange={() => onSetDefault(account.id)}
-          className="h-4 w-4 accent-indigo-600 cursor-pointer"
-          aria-label={`Set ${account.email} as default`}
-        />
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-medium text-zinc-900 dark:text-zinc-50">
+            {account.email}
+          </span>
+          <span className="text-xs text-zinc-400 dark:text-zinc-500">
+            {account.provider === "google" ? "Google" : "Microsoft"}
+          </span>
+          {account.is_default && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+              <span className="text-emerald-500" aria-hidden>●</span>
+              Default
+            </span>
+          )}
+        </div>
       </td>
 
       {/* Write calendar picker */}
@@ -575,12 +597,10 @@ function AccountRow({
 // Mirrors the same state logic as AccountRow but renders as a card.
 function AccountCard({
   account,
-  onSetDefault,
   onDisconnect,
   onPatchWriteCalendar,
 }: {
   account: CalendarAccount;
-  onSetDefault: (id: string) => Promise<void>;
   onDisconnect: (id: string) => Promise<void>;
   onPatchWriteCalendar: (id: string, writeCalendarId: string) => Promise<void>;
 }) {
@@ -623,11 +643,9 @@ function AccountCard({
     }
   }
 
-  const radioName = account.provider === "google" ? "google-default" : "microsoft-default";
-
   return (
     <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      {/* Row 1: provider icon + email + provider label */}
+      {/* Row 1: provider icon + email + provider label + optional default badge */}
       <div className="flex items-center gap-3">
         {account.provider === "google" ? (
           <GoogleMark size="sm" />
@@ -635,36 +653,24 @@ function AccountCard({
           <MicrosoftMark size="sm" />
         )}
         <div className="min-w-0 flex-1">
-          <p className="truncate font-medium text-zinc-900 dark:text-zinc-50">
-            {account.email}
-          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="min-w-0 truncate font-medium text-zinc-900 dark:text-zinc-50">
+              {account.email}
+            </p>
+            {account.is_default && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                <span className="text-emerald-500" aria-hidden>●</span>
+                Default
+              </span>
+            )}
+          </div>
           <p className="text-xs text-zinc-400 dark:text-zinc-500">
             {account.provider === "google" ? "Google" : "Microsoft"}
           </p>
         </div>
       </div>
 
-      {/* Row 2: Default radio */}
-      <div className="mt-3 flex items-center gap-2">
-        <input
-          type="radio"
-          id={`card-default-${account.id}`}
-          name={radioName}
-          value={account.id}
-          checked={account.is_default}
-          onChange={() => onSetDefault(account.id)}
-          className="h-4 w-4 accent-indigo-600 cursor-pointer"
-          aria-label={`Set ${account.email} as default`}
-        />
-        <label
-          htmlFor={`card-default-${account.id}`}
-          className="text-sm text-zinc-700 cursor-pointer dark:text-zinc-300"
-        >
-          Use as default account
-        </label>
-      </div>
-
-      {/* Row 3: Write calendar picker */}
+      {/* Row 2: Write calendar picker */}
       <div className="mt-3">
         <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
           Write calendar
@@ -696,7 +702,7 @@ function AccountCard({
         )}
       </div>
 
-      {/* Row 4: Disconnect button, right-aligned, ≥44px touch target */}
+      {/* Row 3: Disconnect button, right-aligned, ≥44px touch target */}
       <div className="mt-3 flex justify-end">
         <button
           type="button"
@@ -709,6 +715,85 @@ function AccountCard({
           {disconnecting ? "Removing…" : "Disconnect"}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-provider default picker card
+// ---------------------------------------------------------------------------
+
+function DefaultPickerCard({
+  provider,
+  accounts,
+  currentDefaultId,
+  onSelect,
+}: {
+  provider: "google" | "microsoft";
+  accounts: CalendarAccount[];
+  currentDefaultId: string | null;
+  onSelect: (id: string) => Promise<void>;
+}) {
+  const [loading, setLoading] = useState(false);
+
+  const providerLabel = provider === "google" ? "Google" : "Microsoft";
+  const noAccountsPlaceholder =
+    provider === "google"
+      ? "No Google accounts connected"
+      : "No Microsoft accounts connected";
+  const isDisabled = accounts.length <= 1 || loading;
+
+  async function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const id = e.target.value;
+    if (!id || id === currentDefaultId) return;
+    setLoading(true);
+    try {
+      await onSelect(id);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+      <label
+        htmlFor={`default-picker-${provider}`}
+        className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+      >
+        Default {providerLabel} account for new bookings
+      </label>
+      {accounts.length === 0 ? (
+        <>
+          <select
+            id={`default-picker-${provider}`}
+            disabled
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-500"
+          >
+            <option value="">{noAccountsPlaceholder}</option>
+          </select>
+        </>
+      ) : (
+        <>
+          <select
+            id={`default-picker-${provider}`}
+            value={currentDefaultId ?? ""}
+            onChange={handleChange}
+            disabled={isDisabled}
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+          >
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.email}
+              </option>
+            ))}
+          </select>
+          {accounts.length === 1 && (
+            <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+              Only one account — default automatic
+            </p>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -1146,15 +1231,15 @@ function CalendarRow({
 
   return (
     <article className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex items-start gap-4">
+      <div className="flex flex-wrap items-start gap-4">
         <ProviderBadge provider={calendar.provider} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate font-medium text-zinc-900 dark:text-zinc-50">{calendar.name}</h3>
-            <span className="rounded-full border border-zinc-200 px-2 py-0.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
+            <span className="shrink-0 rounded-full border border-zinc-200 px-2 py-0.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
               {PROVIDER_LABEL[calendar.provider]}
             </span>
-            <span className={`rounded-full px-2 py-0.5 text-xs ${badge.className}`}>{badge.label}</span>
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badge.className}`}>{badge.label}</span>
           </div>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Last synced: {lastSynced}</p>
           {calendar.last_error && calendar.status !== "ok" && (
@@ -1171,14 +1256,14 @@ function CalendarRow({
           <button
             onClick={onSync}
             disabled={busy !== null}
-            className="rounded-md border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            className="min-h-[44px] rounded-md border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
             {busy === "sync" ? "Syncing…" : "Sync now"}
           </button>
           <button
             onClick={onDelete}
             disabled={busy !== null}
-            className="rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
+            className="min-h-[44px] rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
           >
             {busy === "delete" ? "Removing…" : "Remove"}
           </button>
@@ -1329,7 +1414,7 @@ function BridgeSection({
               type="button"
               onClick={() => setEnabled(!calendar.bridge_enabled)}
               disabled={busy !== null}
-              className={`h-9 rounded-md px-4 text-sm font-medium disabled:opacity-50 ${
+              className={`min-h-[44px] rounded-md px-4 text-sm font-medium disabled:opacity-50 ${
                 calendar.bridge_enabled
                   ? "border border-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                   : "bg-indigo-600 text-white hover:bg-indigo-700"
@@ -1353,12 +1438,12 @@ function BridgeSection({
                     readOnly
                     value={calendar.bridge_url}
                     onFocus={(e) => e.currentTarget.select()}
-                    className="flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+                    className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
                   />
                   <button
                     type="button"
                     onClick={onCopy}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-md border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                   >
                     <Copy size={14} aria-hidden />
                     {copied ? "Copied" : "Copy"}
@@ -1367,7 +1452,7 @@ function BridgeSection({
                     type="button"
                     onClick={onRotate}
                     disabled={busy !== null}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-md border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                   >
                     <RefreshCw size={14} aria-hidden />
                     {busy === "rotate" ? "…" : "Rotate"}

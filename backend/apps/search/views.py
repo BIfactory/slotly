@@ -17,7 +17,7 @@ from apps.teams.models import Membership, Team
 from apps.teams.permissions import is_member
 
 from .engine import compute_slots
-from .queries import busy_intervals_for_users
+from .queries import _merge_intervals, busy_intervals_for_users
 from .models import RECENT_SEARCH_LIMIT, RecentSearch, SavedSearch
 from .serializers import (
     CheckTimeInputSerializer,
@@ -196,22 +196,6 @@ class CheckTimeView(APIView):
             })
 
         return Response({"everyone_free": everyone_free, "people": people})
-
-
-def _merge_intervals(intervals: list[tuple]) -> list[tuple]:
-    """Merge overlapping (start, end) intervals into a minimal set. Input
-    need not be sorted; output is sorted by start."""
-    if not intervals:
-        return []
-    items = sorted(intervals, key=lambda x: x[0])
-    out = [items[0]]
-    for s, e in items[1:]:
-        last_s, last_e = out[-1]
-        if s <= last_e:
-            out[-1] = (last_s, max(last_e, e))
-        else:
-            out.append((s, e))
-    return out
 
 
 def _working_hours_range(per_user_hours) -> list[int] | None:
