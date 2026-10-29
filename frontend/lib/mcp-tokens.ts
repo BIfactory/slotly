@@ -149,6 +149,10 @@ export function revokeMcpToken(id: number): Promise<void> {
   return request<void>(`/api/mcp/tokens/${id}`, { method: "DELETE" });
 }
 
+export function purgeMcpToken(id: number): Promise<void> {
+  return request<void>(`/api/mcp/tokens/${id}/purge`, { method: "DELETE" });
+}
+
 export function listMcpTokenCalls(id: number): Promise<McpTokenCall[]> {
   return request<McpTokenCall[]>(`/api/mcp/tokens/${id}/calls`);
 }

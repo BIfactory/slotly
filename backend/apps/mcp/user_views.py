@@ -109,6 +109,28 @@ class TokenRevokeView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class TokenPurgeView(APIView):
+    """Hard-delete a token row (and its MCPCall / IdempotencyRecord children
+    via CASCADE). Only revoked tokens can be purged — active tokens must be
+    revoked first so a live integration isn't yanked without a trace."""
+
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk: int):
+        try:
+            token = APIToken.objects.get(pk=pk, user=request.user)
+        except APIToken.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        if token.revoked_at is None:
+            return Response(
+                {"error": "token_still_active", "detail": "Revoke the token before deleting it."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        token.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class TokenCallsView(APIView):
     authentication_classes = [SessionAuthentication]
     permission_classes = [IsAuthenticated]

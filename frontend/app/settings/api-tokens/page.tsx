@@ -29,6 +29,7 @@ import {
   listMcpTokenScopes,
   listMcpTokens,
   revokeMcpToken,
+  purgeMcpToken,
 } from "@/lib/mcp-tokens";
 
 // ---------------------------------------------------------------------------
@@ -124,6 +125,21 @@ function ApiTokensPageInner() {
     }
   }, []);
 
+  const onPurge = useCallback(async (token: McpToken) => {
+    if (
+      !confirm(
+        `Permanently delete token "${token.name}" and its call history? This cannot be undone.`,
+      )
+    )
+      return;
+    try {
+      await purgeMcpToken(token.id);
+      setTokens((prev) => prev.filter((t) => t.id !== token.id));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Delete failed");
+    }
+  }, []);
+
   const onViewCalls = useCallback(async (token: McpToken) => {
     setCallsModal({ token, calls: null });
     try {
@@ -197,7 +213,12 @@ function ApiTokensPageInner() {
               Active and revoked tokens. Revoked tokens cannot be re-activated.
             </p>
           </header>
-          <TokenTable tokens={tokens} onRevoke={onRevoke} onViewCalls={onViewCalls} />
+          <TokenTable
+            tokens={tokens}
+            onRevoke={onRevoke}
+            onPurge={onPurge}
+            onViewCalls={onViewCalls}
+          />
         </section>
       </SettingsLayout>
 
@@ -529,10 +550,12 @@ function CreateTokenForm({
 function TokenTable({
   tokens,
   onRevoke,
+  onPurge,
   onViewCalls,
 }: {
   tokens: McpToken[];
   onRevoke: (t: McpToken) => void;
+  onPurge: (t: McpToken) => void;
   onViewCalls: (t: McpToken) => void;
 }) {
   if (tokens.length === 0) {
@@ -565,7 +588,13 @@ function TokenTable({
           </thead>
           <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
             {tokens.map((t) => (
-              <TokenRow key={t.id} token={t} onRevoke={onRevoke} onViewCalls={onViewCalls} />
+              <TokenRow
+                key={t.id}
+                token={t}
+                onRevoke={onRevoke}
+                onPurge={onPurge}
+                onViewCalls={onViewCalls}
+              />
             ))}
           </tbody>
         </table>
@@ -577,7 +606,13 @@ function TokenTable({
           /settings/calendars. ── */}
       <div className="space-y-2 md:hidden">
         {tokens.map((t) => (
-          <TokenCard key={t.id} token={t} onRevoke={onRevoke} onViewCalls={onViewCalls} />
+          <TokenCard
+            key={t.id}
+            token={t}
+            onRevoke={onRevoke}
+            onPurge={onPurge}
+            onViewCalls={onViewCalls}
+          />
         ))}
       </div>
     </>
@@ -589,10 +624,12 @@ const WRITE_SCOPES_SET = new Set<string>(["create_booking", "write_event"]);
 function TokenRow({
   token,
   onRevoke,
+  onPurge,
   onViewCalls,
 }: {
   token: McpToken;
   onRevoke: (t: McpToken) => void;
+  onPurge: (t: McpToken) => void;
   onViewCalls: (t: McpToken) => void;
 }) {
   const created = new Date(token.created_at).toLocaleString(undefined, {
@@ -655,12 +692,19 @@ function TokenRow({
           >
             View calls
           </button>
-          {token.is_active && (
+          {token.is_active ? (
             <button
               onClick={() => onRevoke(token)}
               className="rounded-md border border-red-200 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
             >
               Revoke
+            </button>
+          ) : (
+            <button
+              onClick={() => onPurge(token)}
+              className="rounded-md border border-red-300 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-950/70"
+            >
+              Delete
             </button>
           )}
         </div>
@@ -672,10 +716,12 @@ function TokenRow({
 function TokenCard({
   token,
   onRevoke,
+  onPurge,
   onViewCalls,
 }: {
   token: McpToken;
   onRevoke: (t: McpToken) => void;
+  onPurge: (t: McpToken) => void;
   onViewCalls: (t: McpToken) => void;
 }) {
   const created = new Date(token.created_at).toLocaleString(undefined, {
@@ -749,13 +795,21 @@ function TokenCard({
         >
           View calls
         </button>
-        {token.is_active && (
+        {token.is_active ? (
           <button
             type="button"
             onClick={() => onRevoke(token)}
             className="inline-flex min-h-[44px] items-center rounded-md border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
           >
             Revoke
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onPurge(token)}
+            className="inline-flex min-h-[44px] items-center rounded-md border border-red-300 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-950/70"
+          >
+            Delete
           </button>
         )}
       </div>
