@@ -790,7 +790,7 @@ class CreateBookingMeetingLinkKindTests(TestCase):
         WriteCalendarDefault.objects.create(user=self.host, google_account=g)
 
         start, end = _future_slot()
-        with self.assertRaises(Exception) as ctx:
+        with self.assertRaises(ValidationError) as ctx:
             create_booking(
                 self.host,
                 start=start,
@@ -799,7 +799,6 @@ class CreateBookingMeetingLinkKindTests(TestCase):
                 meeting_link_kind="teams",
             )
         # Expect a DRF ValidationError keyed on "meeting_link_kind".
-        from rest_framework.exceptions import ValidationError
         self.assertIsInstance(ctx.exception, ValidationError)
         self.assertIn("meeting_link_kind", ctx.exception.detail)
         self.assertIn("Microsoft", str(ctx.exception.detail["meeting_link_kind"]))

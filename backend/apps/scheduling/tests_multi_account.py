@@ -1051,7 +1051,7 @@ class PublicProfileHostProvidersTests(TestCase):
 
         r = self.client.get(f"/api/public/profile/{host.share_token}")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(sorted(r.data["host_providers"]), ["google", "microsoft"])
+        self.assertEqual(r.data["host_providers"], ["google", "microsoft"])
 
     def test_only_google_returns_google_list(self):
         host = self._make_host()

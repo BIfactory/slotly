@@ -44,7 +44,7 @@ from .google_client import (
     fetch_userinfo,
     list_writable_calendars,
 )
-from .models import Booking, BookingRequest, GoogleAccount, MeetingType, MicrosoftAccount, WriteCalendarDefault
+from .models import Booking, BookingRequest, GoogleAccount, MeetingLinkKind, MeetingType, MicrosoftAccount, WriteCalendarDefault
 from .security import encrypt
 from . import services as _svc
 from .services import (
@@ -1841,8 +1841,7 @@ def _validate_meeting_type_payload(
 
     if "meeting_link_kind" in body:
         mlk = str(_get("meeting_link_kind") or "").strip()
-        from .models import MeetingLinkKind as _MLK
-        if mlk not in _MLK.values:
+        if mlk not in MeetingLinkKind.values:
             return {}, {"meeting_link_kind": "invalid"}
         cleaned["meeting_link_kind"] = mlk
 
