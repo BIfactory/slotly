@@ -72,10 +72,13 @@ def authorize_url(state: str) -> str:
         "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
         "response_type": "code",
         "scope": " ".join(settings.GOOGLE_OAUTH_SCOPES),
-        # offline + prompt=consent guarantee a refresh_token on first connect
-        # and on reconnect after a revoke.
+        # offline + prompt guarantees a refresh_token on first connect and on
+        # reconnect after a revoke (consent), while select_account forces the
+        # account picker so users adding a second account are never silently
+        # re-linked to the existing one. Both IdPs accept space-separated
+        # multi-value prompt strings.
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "select_account consent",
         "include_granted_scopes": "true",
         "state": state,
     }

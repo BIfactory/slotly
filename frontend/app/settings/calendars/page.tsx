@@ -155,13 +155,33 @@ function CalendarsPageInner() {
   }, [calendars]);
 
   const handleSetDefault = useCallback(async (id: string) => {
+    // Determine which provider this account belongs to.
+    const clickedProvider = id.startsWith("g:") ? "google" : "microsoft";
+
     // Capture snapshot before optimistic update.
     const snapshot = accounts;
 
-    // Optimistic update.
-    setAccounts((prev) => prev.map((a) => ({ ...a, is_default: a.id === id })));
+    // Optimistic update: set is_default=true for the clicked account and
+    // clear is_default on other accounts of the SAME provider only.
+    // Accounts of the other provider keep their is_default state untouched.
+    setAccounts((prev) =>
+      prev.map((a) => {
+        if (a.provider !== clickedProvider) return a;
+        return { ...a, is_default: a.id === id };
+      }),
+    );
     try {
-      await setDefaultAccount(id);
+      const result = await setDefaultAccount(id);
+      // Server response tells us the canonical per-provider default IDs.
+      // Apply them to ensure UI is in sync without a round-trip.
+      setAccounts((prev) =>
+        prev.map((a) => ({
+          ...a,
+          is_default:
+            a.id === result.google_default_id ||
+            a.id === result.microsoft_default_id,
+        })),
+      );
     } catch (err) {
       // Revert to snapshot immediately on error.
       setAccounts(snapshot);
@@ -370,41 +390,51 @@ function AccountsTable({
   onDisconnect: (id: string) => Promise<void>;
   onPatchWriteCalendar: (id: string, writeCalendarId: string) => Promise<void>;
 }) {
+  const rowProps = {
+    onSetDefault,
+    onDisconnect,
+    onPatchWriteCalendar,
+  };
+
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-zinc-200 dark:border-zinc-800">
-            <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-              Provider
-            </th>
-            <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-              Account
-            </th>
-            <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-              Default
-            </th>
-            <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-              Write calendar
-            </th>
-            <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-              Actions
-            </th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-          {accounts.map((account) => (
-            <AccountRow
-              key={account.id}
-              account={account}
-              onSetDefault={onSetDefault}
-              onDisconnect={onDisconnect}
-              onPatchWriteCalendar={onPatchWriteCalendar}
-            />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <>
+      {/* ── Desktop (≥768px): standard 5-column table ── */}
+      <div className="hidden overflow-hidden rounded-xl border border-zinc-200 bg-white md:block dark:border-zinc-800 dark:bg-zinc-900">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-zinc-200 dark:border-zinc-800">
+              <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                Provider
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                Account
+              </th>
+              <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                Default
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                Write calendar
+              </th>
+              <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            {accounts.map((account) => (
+              <AccountRow key={account.id} account={account} {...rowProps} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── Mobile (<768px): stacked card list ── */}
+      <div className="space-y-2 md:hidden">
+        {accounts.map((account) => (
+          <AccountCard key={account.id} account={account} {...rowProps} />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -481,11 +511,12 @@ function AccountRow({
         </span>
       </td>
 
-      {/* Default radio */}
+      {/* Default radio — scoped per provider so Google and Microsoft radios
+           form two independent groups and switching one doesn't clear the other. */}
       <td className="px-4 py-3 text-center">
         <input
           type="radio"
-          name="default-account"
+          name={account.provider === "google" ? "google-default" : "microsoft-default"}
           value={account.id}
           checked={account.is_default}
           onChange={() => onSetDefault(account.id)}
@@ -537,6 +568,148 @@ function AccountRow({
         </button>
       </td>
     </tr>
+  );
+}
+
+// Mobile-only stacked card for a single account (<md breakpoint).
+// Mirrors the same state logic as AccountRow but renders as a card.
+function AccountCard({
+  account,
+  onSetDefault,
+  onDisconnect,
+  onPatchWriteCalendar,
+}: {
+  account: CalendarAccount;
+  onSetDefault: (id: string) => Promise<void>;
+  onDisconnect: (id: string) => Promise<void>;
+  onPatchWriteCalendar: (id: string, writeCalendarId: string) => Promise<void>;
+}) {
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [calendars, setCalendars] = useState<WritableCalendar[] | null>(null);
+  const [savingCalendar, setSavingCalendar] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const fetcher =
+      account.provider === "google" ? getWritableCalendars : getMicrosoftWritableCalendars;
+    fetcher(account.id)
+      .then((list) => {
+        if (alive) setCalendars(list);
+      })
+      .catch(() => {
+        if (alive) setCalendars([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [account.id, account.provider]);
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    try {
+      await onDisconnect(account.id);
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
+  async function handlePickCalendar(writeCalendarId: string) {
+    if (savingCalendar) return;
+    setSavingCalendar(true);
+    try {
+      await onPatchWriteCalendar(account.id, writeCalendarId);
+    } finally {
+      setSavingCalendar(false);
+    }
+  }
+
+  const radioName = account.provider === "google" ? "google-default" : "microsoft-default";
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+      {/* Row 1: provider icon + email + provider label */}
+      <div className="flex items-center gap-3">
+        {account.provider === "google" ? (
+          <GoogleMark size="sm" />
+        ) : (
+          <MicrosoftMark size="sm" />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium text-zinc-900 dark:text-zinc-50">
+            {account.email}
+          </p>
+          <p className="text-xs text-zinc-400 dark:text-zinc-500">
+            {account.provider === "google" ? "Google" : "Microsoft"}
+          </p>
+        </div>
+      </div>
+
+      {/* Row 2: Default radio */}
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          type="radio"
+          id={`card-default-${account.id}`}
+          name={radioName}
+          value={account.id}
+          checked={account.is_default}
+          onChange={() => onSetDefault(account.id)}
+          className="h-4 w-4 accent-indigo-600 cursor-pointer"
+          aria-label={`Set ${account.email} as default`}
+        />
+        <label
+          htmlFor={`card-default-${account.id}`}
+          className="text-sm text-zinc-700 cursor-pointer dark:text-zinc-300"
+        >
+          Use as default account
+        </label>
+      </div>
+
+      {/* Row 3: Write calendar picker */}
+      <div className="mt-3">
+        <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
+          Write calendar
+        </label>
+        {calendars === null ? (
+          <div className="h-8 w-full animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800" />
+        ) : calendars.length > 0 ? (
+          <select
+            value={account.write_calendar_id}
+            onChange={(e) => handlePickCalendar(e.target.value)}
+            disabled={savingCalendar}
+            className="w-full max-w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+          >
+            {!calendars.some((c) => c.id === account.write_calendar_id) &&
+              account.write_calendar_id !== "" && (
+                <option value={account.write_calendar_id}>
+                  {account.write_calendar_id} (missing)
+                </option>
+              )}
+            {calendars.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.summary}
+                {c.primary ? " (primary)" : ""}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-xs text-zinc-400 dark:text-zinc-500">—</span>
+        )}
+      </div>
+
+      {/* Row 4: Disconnect button, right-aligned, ≥44px touch target */}
+      <div className="mt-3 flex justify-end">
+        <button
+          type="button"
+          onClick={handleDisconnect}
+          disabled={disconnecting}
+          className="inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
+          aria-label={`Disconnect ${account.email}`}
+        >
+          <Unplug size={14} aria-hidden />
+          {disconnecting ? "Removing…" : "Disconnect"}
+        </button>
+      </div>
+    </div>
   );
 }
 

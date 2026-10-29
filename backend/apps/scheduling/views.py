@@ -881,39 +881,57 @@ class CalendarAccountDetailView(APIView):
         if account is None:
             return Response({"detail": "Account not found."}, status=404)
 
-        # Capture default state BEFORE deletion.  When this account is the
-        # FK target of WriteCalendarDefault, Django's CASCADE will delete
-        # that row too — so we can't update it after the fact.
+        # Determine whether this account is the current default for its
+        # provider BEFORE deleting.  We must update WriteCalendarDefault
+        # BEFORE account.delete() so the FK promotion can see remaining
+        # accounts; also, if this account IS the WCD FK target, deleting it
+        # first would cascade-delete the WCD row and we would lose the other
+        # provider's FK.
         default = WriteCalendarDefault.objects.filter(user=request.user).first()
-        is_default = False
+        is_this_provider_default = False
         if default is not None:
             if provider == "google" and default.google_account_id == account.pk:
-                is_default = True
+                is_this_provider_default = True
             elif provider == "microsoft" and default.microsoft_account_id == account.pk:
-                is_default = True
+                is_this_provider_default = True
 
-        # Delete the account row (may cascade-delete WriteCalendarDefault).
-        account.delete()
-
-        if is_default:
-            # Try to promote: next Google first, then Microsoft.
-            next_g = GoogleAccount.objects.filter(user=request.user).first()
-            if next_g is not None:
-                # Re-fetch default (may still exist if it pointed at a different
-                # provider, or create fresh if cascade-deleted it).
-                WriteCalendarDefault.objects.update_or_create(
-                    user=request.user,
-                    defaults={"google_account": next_g, "microsoft_account": None},
+        if is_this_provider_default and default is not None:
+            # Promote within the same provider: exclude the account being
+            # deleted, pick the next one by pk order.
+            if provider == "google":
+                next_same = (
+                    GoogleAccount.objects
+                    .filter(user=request.user)
+                    .exclude(pk=account.pk)
+                    .order_by("pk")
+                    .first()
                 )
+                default.google_account = next_same  # None if no other
+            else:  # microsoft
+                next_same = (
+                    MicrosoftAccount.objects
+                    .filter(user=request.user)
+                    .exclude(pk=account.pk)
+                    .order_by("pk")
+                    .first()
+                )
+                default.microsoft_account = next_same  # None if no other
+
+            # Persist or delete depending on whether the other FK is still
+            # set.  Both-null would violate the CheckConstraint.
+            if not default.has_default("google") and not default.has_default("microsoft"):
+                # After the update both FKs will be null — delete the row to
+                # satisfy the at-least-one constraint, then delete the account.
+                default.delete()
             else:
-                next_m = MicrosoftAccount.objects.filter(user=request.user).first()
-                if next_m is not None:
-                    WriteCalendarDefault.objects.update_or_create(
-                        user=request.user,
-                        defaults={"microsoft_account": next_m, "google_account": None},
-                    )
-                # else: no accounts remain — WriteCalendarDefault already gone (cascade)
-                # or we let it be absent.
+                if provider == "google":
+                    default.save(update_fields=["google_account"])
+                else:
+                    default.save(update_fields=["microsoft_account"])
+
+        # Delete the account row.  If the WCD row was already updated/deleted
+        # above, the CASCADE on this FK will be a no-op.
+        account.delete()
 
         return Response(status=204)
 
@@ -935,7 +953,8 @@ class CalendarAccountSetDefaultView(APIView):
         except ValueError:
             return Response({"detail": "Account not found."}, status=404)
 
-        # Upsert WriteCalendarDefault for this user.
+        # Upsert WriteCalendarDefault for this user, touching ONLY the matching
+        # provider's FK so the other provider's default is preserved.
         default = WriteCalendarDefault.objects.filter(user=request.user).first()
         if default is None:
             if provider == "google":
@@ -949,13 +968,22 @@ class CalendarAccountSetDefaultView(APIView):
         else:
             if provider == "google":
                 default.google_account = account
-                default.microsoft_account = None
+                default.save(update_fields=["google_account"])
             else:
                 default.microsoft_account = account
-                default.google_account = None
-            default.save(update_fields=["google_account", "microsoft_account"])
+                default.save(update_fields=["microsoft_account"])
 
-        return Response({"status": "ok", "default": composite_id})
+        # Re-read to get both FK values after the save.
+        default = WriteCalendarDefault.objects.filter(user=request.user).first()
+        google_pk = default.google_account_id if default else None
+        microsoft_pk = default.microsoft_account_id if default else None
+
+        return Response({
+            "status": "ok",
+            "default": composite_id,
+            "google_default_id": f"g:{google_pk}" if google_pk is not None else None,
+            "microsoft_default_id": f"m:{microsoft_pk}" if microsoft_pk is not None else None,
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -2281,10 +2309,20 @@ class _WriteProvider:
     delete_event: Any
 
 
-def _pick_write_provider(user) -> _WriteProvider | None:
+def _pick_write_provider(user, provider: str | None = None) -> _WriteProvider | None:
     """Choose which OAuth-connected provider should host the new event.
 
     Reads WriteCalendarDefault; auto-elects if missing but accounts exist.
+
+    The ``provider`` kwarg mirrors ``services._pick_write_provider``:
+    ``None`` (default) uses the primary Google > MS fallback; ``"google"``
+    or ``"microsoft"`` forces that specific provider and returns None if it
+    is not connected.
+
+    Note: this views-layer copy exists so that unittest patches on the
+    module-level ``create_calendar_event`` name keep working for existing
+    public-booking tests.  New provider-aware callers (Block B and beyond)
+    should import from ``services`` directly.
     """
     default = (
         WriteCalendarDefault.objects
@@ -2296,27 +2334,62 @@ def _pick_write_provider(user) -> _WriteProvider | None:
         # Use get_or_create to be race-safe: two concurrent callers can both
         # see default=None and race to create the row (OneToOneField unique).
         g = GoogleAccount.objects.filter(user=user).first()
-        if g is not None:
+        m = MicrosoftAccount.objects.filter(user=user).first()
+        if provider == "google":
+            if g is None:
+                return None
             default, _ = WriteCalendarDefault.objects.get_or_create(
                 user=user, defaults={"google_account": g}
             )
-        else:
-            m = MicrosoftAccount.objects.filter(user=user).first()
+        elif provider == "microsoft":
             if m is None:
                 return None
             default, _ = WriteCalendarDefault.objects.get_or_create(
                 user=user, defaults={"microsoft_account": m}
             )
+        else:
+            if g is not None:
+                default, _ = WriteCalendarDefault.objects.get_or_create(
+                    user=user, defaults={"google_account": g}
+                )
+            elif m is not None:
+                default, _ = WriteCalendarDefault.objects.get_or_create(
+                    user=user, defaults={"microsoft_account": m}
+                )
+            else:
+                return None
 
-    if default.google_account_id is not None:
+    if provider == "google":
         g = default.google_account
+        if g is None:
+            return None
         return _WriteProvider(
             name="google",
             write_calendar_id=g.write_calendar_id or "primary",
             create_event=create_calendar_event,
             delete_event=delete_calendar_event,
         )
-    m = default.microsoft_account
+    if provider == "microsoft":
+        m = default.microsoft_account
+        if m is None:
+            return None
+        return _WriteProvider(
+            name="microsoft",
+            write_calendar_id=m.write_calendar_id,
+            create_event=_graph.create_calendar_event,
+            delete_event=_graph.delete_calendar_event,
+        )
+
+    # provider is None → primary (Google > MS), back-compat.
+    if default.has_default("google"):
+        g = default.default_write_target("google")
+        return _WriteProvider(
+            name="google",
+            write_calendar_id=g.write_calendar_id or "primary",
+            create_event=create_calendar_event,
+            delete_event=delete_calendar_event,
+        )
+    m = default.default_write_target("microsoft")
     return _WriteProvider(
         name="microsoft",
         write_calendar_id=m.write_calendar_id,

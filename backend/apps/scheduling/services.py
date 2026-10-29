@@ -96,15 +96,24 @@ class _WriteProvider:
         return _ms.delete_calendar_event(*args, **kwargs)
 
 
-def _pick_write_provider(user) -> _WriteProvider | None:
+def _pick_write_provider(user, provider: str | None = None) -> _WriteProvider | None:
     """Choose which OAuth-connected provider should host the new event.
 
     Reads ``WriteCalendarDefault`` for the user.  If no default exists but
-    accounts do, auto-elects the first available (Google-preferred) and
-    persists a new WriteCalendarDefault row — keeps existing tests passing
-    because they create accounts but don't create defaults.
+    accounts do, auto-elects the first available and persists a new
+    WriteCalendarDefault row — keeps existing tests passing because they create
+    accounts but don't create defaults.
 
-    Returns None when no accounts are connected.
+    Args:
+        user: The Django user instance.
+        provider: If ``None`` (default), returns the *primary* account using
+            the Google > MS fallback — back-compat with existing callers.
+            If ``"google"``, returns the user's Google-specific default;
+            returns ``None`` if Google is not connected (no MS fallback).
+            If ``"microsoft"``, mirrors for Microsoft.
+
+    Returns None when no accounts are connected (or when the requested
+    provider is not connected).
     """
     from .models import WriteCalendarDefault, GoogleAccount, MicrosoftAccount
 
@@ -115,37 +124,73 @@ def _pick_write_provider(user) -> _WriteProvider | None:
         .first()
     )
     if default is None:
-        # Auto-elect first available account (Google preferred) + persist.
-        # Use get_or_create to be race-safe: two concurrent callers (e.g. a
-        # booking view + a services call) would both see default=None and both
-        # try to create the row, hitting the OneToOneField unique constraint.
+        # Auto-elect first available account of the requested provider (or
+        # primary if None).  Use get_or_create to be race-safe: two concurrent
+        # callers would both see default=None and both try to create the row,
+        # hitting the OneToOneField unique constraint.
         g = GoogleAccount.objects.filter(user=user).first()
-        if g is not None:
+        m = MicrosoftAccount.objects.filter(user=user).first()
+        if provider == "google":
+            if g is None:
+                return None
             default, _ = WriteCalendarDefault.objects.get_or_create(
                 user=user, defaults={"google_account": g}
             )
-        else:
-            m = MicrosoftAccount.objects.filter(user=user).first()
+        elif provider == "microsoft":
             if m is None:
                 return None
             default, _ = WriteCalendarDefault.objects.get_or_create(
                 user=user, defaults={"microsoft_account": m}
             )
+        else:
+            # provider is None → preserve existing fallback: Google first.
+            if g is not None:
+                default, _ = WriteCalendarDefault.objects.get_or_create(
+                    user=user, defaults={"google_account": g}
+                )
+            elif m is not None:
+                default, _ = WriteCalendarDefault.objects.get_or_create(
+                    user=user, defaults={"microsoft_account": m}
+                )
+            else:
+                return None
 
-    if default.google_account_id is not None:
+    if provider == "google":
         g = default.google_account
+        if g is None:
+            return None
         return _WriteProvider(
             name="google",
             write_calendar_id=g.write_calendar_id or "primary",
             _backend="google",
             account_id=default.google_account_id,
         )
-    m = default.microsoft_account
+    if provider == "microsoft":
+        m = default.microsoft_account
+        if m is None:
+            return None
+        return _WriteProvider(
+            name="microsoft",
+            write_calendar_id=m.write_calendar_id,
+            _backend="microsoft",
+            account_id=default.microsoft_account_id,
+        )
+
+    # provider is None → primary (Google > MS), back-compat.
+    if default.has_default("google"):
+        g = default.default_write_target("google")
+        return _WriteProvider(
+            name="google",
+            write_calendar_id=g.write_calendar_id or "primary",
+            _backend="google",
+            account_id=g.pk,
+        )
+    m = default.default_write_target("microsoft")
     return _WriteProvider(
         name="microsoft",
         write_calendar_id=m.write_calendar_id,  # empty = primary
         _backend="microsoft",
-        account_id=default.microsoft_account_id,
+        account_id=m.pk,
     )
 
 

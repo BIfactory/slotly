@@ -41,13 +41,17 @@ class WriteCalendarDefaultConstraintTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="a@x.test", password="x" * 12)
 
-    def test_cannot_point_to_both_google_and_microsoft(self):
+    def test_can_point_to_both_google_and_microsoft_simultaneously(self):
+        # Task A1: XOR constraint removed. Both FKs may be non-null at once so
+        # a user with two providers connected can have a write default for each.
         g = _make_google(self.user)
         m = _make_microsoft(self.user)
-        with self.assertRaises(IntegrityError):
-            WriteCalendarDefault.objects.create(
-                user=self.user, google_account=g, microsoft_account=m
-            )
+        wd = WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+        self.assertIsNotNone(wd.pk)
+        self.assertEqual(wd.google_account_id, g.pk)
+        self.assertEqual(wd.microsoft_account_id, m.pk)
 
     def test_cannot_be_both_null(self):
         with self.assertRaises(IntegrityError):
@@ -352,6 +356,8 @@ class CalendarAccountsAPITests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_set_default_switches_provider(self):
+        # A4: setting the MS default now preserves the Google default (no longer
+        # clears the other provider's FK).
         g = _make_google(self.user, email="alice@gmail.com")
         m = _make_microsoft(self.user, email="alice@outlook.com")
         WriteCalendarDefault.objects.create(user=self.user, google_account=g)
@@ -359,7 +365,8 @@ class CalendarAccountsAPITests(TestCase):
         resp = self.client.post(f"/api/calendar-accounts/m:{m.pk}/set-default")
         self.assertEqual(resp.status_code, 200)
         wcd = WriteCalendarDefault.objects.get(user=self.user)
-        self.assertIsNone(wcd.google_account_id)
+        # Google FK is preserved (not cleared) — per-provider independence.
+        self.assertEqual(wcd.google_account_id, g.pk)
         self.assertEqual(wcd.microsoft_account_id, m.pk)
 
     # ── delete ───────────────────────────────────────────────────────────────
@@ -797,3 +804,188 @@ class WritableCalendarsPerAccountMicrosoftTests(TestCase):
         self.assertEqual(resp.status_code, 404)
         body = resp.json()
         self.assertEqual(body.get("code"), "not_found")
+
+
+# ---------------------------------------------------------------------------
+# Task A2: per-provider delete/promote logic
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    GOOGLE_OAUTH_CLIENT_ID="dev-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET="dev-client-secret",
+    FRONTEND_BASE_URL="http://localhost:3000",
+)
+class DeletePromotePerProviderTests(TestCase):
+    """R3: when deleting the Google default, promote the next GoogleAccount
+    (not an MS account) and leave the MS FK untouched."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.user = User.objects.create_user(email="delp@slotly.test", password="x" * 12)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_deleting_google_default_promotes_next_google_not_microsoft(self):
+        """Delete Google B (default) → Google A promoted; MS default unchanged."""
+        g_a = _make_google(self.user, email="delp_a@gmail.com")
+        g_b = _make_google(self.user, email="delp_b@gmail.com")
+        m = _make_microsoft(self.user, email="delp@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g_b, microsoft_account=m
+        )
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g_b.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        # g_b is gone
+        self.assertFalse(GoogleAccount.objects.filter(pk=g_b.pk).exists())
+
+        # WCD row still exists and was updated correctly
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        # Google FK promoted to g_a
+        self.assertEqual(wcd.google_account_id, g_a.pk)
+        # Microsoft FK untouched
+        self.assertEqual(wcd.microsoft_account_id, m.pk)
+
+    def test_deleting_only_google_leaves_ms_default_intact(self):
+        """Delete the only Google account → google_account_id becomes None;
+        microsoft_account_id unchanged; WCD row survives."""
+        g = _make_google(self.user, email="delp_solo@gmail.com")
+        m = _make_microsoft(self.user, email="delp_solo@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertIsNone(wcd.google_account_id)
+        self.assertEqual(wcd.microsoft_account_id, m.pk)
+
+    def test_deleting_last_account_removes_write_default_row(self):
+        """Delete the only account (Google, no MS) → WCD row removed."""
+        g = _make_google(self.user, email="delp_last@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        self.assertFalse(WriteCalendarDefault.objects.filter(user=self.user).exists())
+
+    def test_deleting_microsoft_default_promotes_next_microsoft_not_google(self):
+        """Delete MS B (default) → MS A promoted; Google FK untouched."""
+        g = _make_google(self.user, email="delp_g@gmail.com")
+        m_a = _make_microsoft(self.user, email="delp_ms_a@outlook.com")
+        m_b = _make_microsoft(self.user, email="delp_ms_b@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m_b
+        )
+
+        resp = self.client.delete(f"/api/calendar-accounts/m:{m_b.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        self.assertFalse(MicrosoftAccount.objects.filter(pk=m_b.pk).exists())
+
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        # MS FK promoted to m_a
+        self.assertEqual(wcd.microsoft_account_id, m_a.pk)
+        # Google FK untouched
+        self.assertEqual(wcd.google_account_id, g.pk)
+
+
+# ---------------------------------------------------------------------------
+# Task A4: per-provider independent defaults via set-default endpoint
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    GOOGLE_OAUTH_CLIENT_ID="dev-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET="dev-client-secret",
+    FRONTEND_BASE_URL="http://localhost:3000",
+)
+class PerProviderDefaultTests(TestCase):
+    """A4: set-default endpoint persists each provider's FK independently."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.user = User.objects.create_user(email="a4@slotly.test", password="x" * 12)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_setting_google_default_and_ms_default_persists_both(self):
+        """POST set-default for Google, then for MS → WCD has both FKs set.
+        GET /api/calendar-accounts returns TWO accounts with is_default=True."""
+        g = _make_google(self.user, email="a4g@gmail.com")
+        m = _make_microsoft(self.user, email="a4m@outlook.com")
+
+        resp_g = self.client.post(f"/api/calendar-accounts/g:{g.pk}/set-default")
+        self.assertEqual(resp_g.status_code, 200)
+
+        resp_m = self.client.post(f"/api/calendar-accounts/m:{m.pk}/set-default")
+        self.assertEqual(resp_m.status_code, 200)
+
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertEqual(wcd.google_account_id, g.pk)
+        self.assertEqual(wcd.microsoft_account_id, m.pk)
+
+        # Both accounts reported as is_default in the list response.
+        list_resp = self.client.get("/api/calendar-accounts")
+        self.assertEqual(list_resp.status_code, 200)
+        accounts = list_resp.json()["accounts"]
+        defaults = [a for a in accounts if a["is_default"]]
+        self.assertEqual(len(defaults), 2)
+        default_ids = {a["id"] for a in defaults}
+        self.assertIn(f"g:{g.pk}", default_ids)
+        self.assertIn(f"m:{m.pk}", default_ids)
+
+    def test_set_default_only_touches_matching_provider_fk(self):
+        """Pre-state: Google=A default, MS=X. POST set-default for Google B.
+        Expected: google_account_id → B; microsoft_account_id → X (unchanged)."""
+        g_a = _make_google(self.user, email="a4g_a@gmail.com")
+        g_b = _make_google(self.user, email="a4g_b@gmail.com")
+        m_x = _make_microsoft(self.user, email="a4m_x@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g_a, microsoft_account=m_x
+        )
+
+        resp = self.client.post(f"/api/calendar-accounts/g:{g_b.pk}/set-default")
+        self.assertEqual(resp.status_code, 200)
+
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertEqual(wcd.google_account_id, g_b.pk)
+        self.assertEqual(wcd.microsoft_account_id, m_x.pk)  # unchanged
+
+    def test_set_default_response_includes_both_provider_defaults(self):
+        """POST set-default response includes google_default_id and
+        microsoft_default_id fields reflecting the current state."""
+        g = _make_google(self.user, email="a4resp_g@gmail.com")
+        m = _make_microsoft(self.user, email="a4resp_m@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+
+        # Switch to a new Google account — MS default remains.
+        g2 = _make_google(self.user, email="a4resp_g2@gmail.com")
+        resp = self.client.post(f"/api/calendar-accounts/g:{g2.pk}/set-default")
+        self.assertEqual(resp.status_code, 200)
+
+        body = resp.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["default"], f"g:{g2.pk}")
+        self.assertEqual(body["google_default_id"], f"g:{g2.pk}")
+        self.assertEqual(body["microsoft_default_id"], f"m:{m.pk}")
+
+    def test_set_ms_default_response_shows_null_google_when_no_google_set(self):
+        """When only MS is connected, google_default_id must be null."""
+        m = _make_microsoft(self.user, email="a4ms_only@outlook.com")
+
+        resp = self.client.post(f"/api/calendar-accounts/m:{m.pk}/set-default")
+        self.assertEqual(resp.status_code, 200)
+
+        body = resp.json()
+        self.assertIsNone(body["google_default_id"])
+        self.assertEqual(body["microsoft_default_id"], f"m:{m.pk}")
