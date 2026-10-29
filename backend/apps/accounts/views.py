@@ -16,8 +16,8 @@ from rest_framework.views import APIView
 from apps.availability.models import Unavailability
 from apps.calendars.models import Calendar, CalendarEvent
 from apps.notifications.dispatch import notify
-from apps.search.queries import busy_intervals_for_users as _busy_intervals_for_users
 from apps.notifications.models import Notification
+from apps.search.queries import busy_intervals_for_users as _busy_intervals_for_users
 from apps.teams.models import Membership, Team
 
 from .serializers import MeSerializer, PublicProfileSerializer, TeammateSerializer
