@@ -27,6 +27,7 @@ from django.utils import timezone as djtz
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
+from rest_framework.exceptions import ValidationError as _VE
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -54,7 +55,6 @@ from .services import (
     _mail_visitor_host_cancellation,
     _manage_url,
     _notify_booking_rescheduled,
-    _resolve_write_provider_for_kind,
 )
 
 logger = logging.getLogger(__name__)
@@ -1307,13 +1307,8 @@ class PublicMeetingCreateView(APIView):
 
         try:
             provider = _resolve_write_provider_for_kind(user, meeting_link_kind)
-        except Exception as exc:
-            # _resolve_write_provider_for_kind raises DRF ValidationError on
-            # unrecognised kind or disconnected provider — translate to 400.
-            from rest_framework.exceptions import ValidationError as _VE
-            if isinstance(exc, _VE):
-                return Response(exc.detail, status=400)
-            raise
+        except _VE as exc:
+            return Response(exc.detail, status=400)
         if provider is None:
             return Response(
                 {"detail": "The host hasn't set up direct booking yet."},
@@ -2438,6 +2433,30 @@ def _provider_for(name: str) -> Any:
     if name == "microsoft":
         return _graph.create_calendar_event, _graph.delete_calendar_event
     raise ValueError(f"Unknown provider: {name}")
+
+
+def _resolve_write_provider_for_kind(host, kind: str) -> "_WriteProvider | None":
+    """Views-layer wrapper for meeting_link_kind → write provider resolution.
+
+    Mirrors services._resolve_write_provider_for_kind but uses the views-layer
+    _pick_write_provider so that unittest patches on the module-level
+    ``create_calendar_event`` name still land correctly for public-booking
+    view tests.  The duplication mirrors the existing _pick_write_provider
+    duplication documented at line 2325.
+    """
+    if kind == "google_meet":
+        p = _pick_write_provider(host, provider="google")
+        if p is None:
+            raise _VE({"meeting_link_kind": "Google is not connected"})
+        return p
+    if kind == "teams":
+        p = _pick_write_provider(host, provider="microsoft")
+        if p is None:
+            raise _VE({"meeting_link_kind": "Microsoft is not connected"})
+        return p
+    if kind in ("auto", "none"):
+        return _pick_write_provider(host)
+    raise _VE({"meeting_link_kind": "invalid"})
 
 
 def _parse_iso_dt(value):
