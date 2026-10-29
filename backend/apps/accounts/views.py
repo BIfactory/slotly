@@ -436,6 +436,18 @@ class PublicProfileView(APIView):
                 "kind", "location", "color", "questions", "redirect_url",
             )
         )
+        # Build sorted host_providers list so the frontend knows which OAuth
+        # providers the host has connected (drives the meeting-link selector).
+        from apps.scheduling.models import GoogleAccount as _GA, MicrosoftAccount as _MA
+        _providers: list[str] = []
+        if _GA.objects.filter(user=user).exists():
+            _providers.append("google")
+        if _MA.objects.filter(user=user).exists():
+            _providers.append("microsoft")
+        # List is already in sorted order (google < microsoft alphabetically);
+        # explicit sort guards against future providers being added out of order.
+        _providers = sorted(_providers)
+
         return Response({
             "profile": profile,
             "window": {
@@ -452,6 +464,10 @@ class PublicProfileView(APIView):
             # hides the booking dialog.
             "booking_enabled": _has_writable_provider(user),
             "meeting_types": types,
+            # Sorted list of OAuth provider names the host has connected.
+            # Used by /u/[token] to conditionally show the meeting-link
+            # selector when the host has both Google and Microsoft connected.
+            "host_providers": _providers,
         })
 
 

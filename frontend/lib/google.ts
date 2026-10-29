@@ -188,23 +188,31 @@ export async function createPublicMeeting(input: {
   /** Honeypot field. Leave empty; if a script populates every text field
    * it fills this too and the backend silently drops the request. */
   hp?: string;
+  /** Visitor's preferred meeting link provider. Only sent when the host has
+   * both Google and Microsoft connected and the visitor explicitly picks one.
+   * Omit (or pass undefined) to use the host's default ("auto"). */
+  meetingLinkKind?: "google" | "microsoft";
 }): Promise<PublicBookingResult> {
+  const payload: Record<string, unknown> = {
+    visitor_name: input.visitorName,
+    visitor_email: input.visitorEmail,
+    start: input.start,
+    end: input.end,
+    title: input.title,
+    notes: input.notes,
+    kind: input.kind ?? "online",
+    location: input.location ?? "",
+    type_slug: input.typeSlug,
+    custom_answers: input.customAnswers ?? {},
+    hp: input.hp ?? "",
+  };
+  if (input.meetingLinkKind) {
+    payload.meeting_link_kind = input.meetingLinkKind;
+  }
   const res = await fetch(`/api/public/meetings/${input.token}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      visitor_name: input.visitorName,
-      visitor_email: input.visitorEmail,
-      start: input.start,
-      end: input.end,
-      title: input.title,
-      notes: input.notes,
-      kind: input.kind ?? "online",
-      location: input.location ?? "",
-      type_slug: input.typeSlug,
-      custom_answers: input.customAnswers ?? {},
-      hp: input.hp ?? "",
-    }),
+    body: JSON.stringify(payload),
   });
   if (res.status === 204) {
     // Honeypot triggered — mimic success so bots don't learn.
