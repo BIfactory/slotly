@@ -54,6 +54,7 @@ from .services import (
     _mail_visitor_host_cancellation,
     _manage_url,
     _notify_booking_rescheduled,
+    _resolve_write_provider_for_kind,
 )
 
 logger = logging.getLogger(__name__)
@@ -1294,7 +1295,25 @@ class PublicMeetingCreateView(APIView):
                 "request_id": req.pk,
             }, status=202)
 
-        provider = _pick_write_provider(user)
+        # Resolve the video-link kind: client may send one explicitly; otherwise
+        # fall back to the meeting type's default (if a type is in play), or "auto".
+        raw_kind = body.get("meeting_link_kind")
+        if raw_kind is not None:
+            meeting_link_kind = str(raw_kind).strip()
+        elif meeting_type is not None:
+            meeting_link_kind = meeting_type.meeting_link_kind
+        else:
+            meeting_link_kind = "auto"
+
+        try:
+            provider = _resolve_write_provider_for_kind(user, meeting_link_kind)
+        except Exception as exc:
+            # _resolve_write_provider_for_kind raises DRF ValidationError on
+            # unrecognised kind or disconnected provider — translate to 400.
+            from rest_framework.exceptions import ValidationError as _VE
+            if isinstance(exc, _VE):
+                return Response(exc.detail, status=400)
+            raise
         if provider is None:
             return Response(
                 {"detail": "The host hasn't set up direct booking yet."},
@@ -1344,6 +1363,7 @@ class PublicMeetingCreateView(APIView):
             custom_answers=custom_answers,
             start_at=start_dt,
             end_at=end_dt,
+            meeting_link_kind=meeting_link_kind,
         )
         description = _description_with_manage_link(base_description, booking)
 

@@ -575,3 +575,181 @@ class PickWriteProviderPerProviderTests(TestCase):
 
         provider = _pick_write_provider(self.user, provider="microsoft")
         self.assertIsNone(provider)
+
+
+# ---------------------------------------------------------------------------
+# Task B2: _resolve_write_provider_for_kind + create_booking meeting_link_kind
+# ---------------------------------------------------------------------------
+
+
+@override_settings(FRONTEND_BASE_URL="http://localhost:3000", TIME_ZONE="UTC")
+class ResolveWriteProviderForKindTests(TestCase):
+    """Unit tests for _resolve_write_provider_for_kind."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="kind@slotly.test", password="x" * 12)
+
+    def test_google_meet_kind_routes_to_google(self):
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+
+        g = _make_google_svc(self.user, email="kind@gmail.com")
+        m = _make_microsoft_svc(self.user, email="kind@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+
+        provider = _resolve_write_provider_for_kind(self.user, "google_meet")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "google")
+
+    def test_teams_kind_routes_to_microsoft(self):
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+
+        g = _make_google_svc(self.user, email="kind@gmail.com")
+        m = _make_microsoft_svc(self.user, email="kind@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+
+        provider = _resolve_write_provider_for_kind(self.user, "teams")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "microsoft")
+
+    def test_auto_kind_returns_primary_provider(self):
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+
+        g = _make_google_svc(self.user, email="kind@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        provider = _resolve_write_provider_for_kind(self.user, "auto")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "google")
+
+    def test_none_kind_returns_primary_provider(self):
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+
+        g = _make_google_svc(self.user, email="kind@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        provider = _resolve_write_provider_for_kind(self.user, "none")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "google")
+
+    def test_google_meet_kind_raises_when_google_not_connected(self):
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+        from rest_framework.exceptions import ValidationError
+
+        m = _make_microsoft_svc(self.user, email="kind@outlook.com")
+        WriteCalendarDefault.objects.create(user=self.user, microsoft_account=m)
+
+        with self.assertRaises(ValidationError) as ctx:
+            _resolve_write_provider_for_kind(self.user, "google_meet")
+        self.assertIn("meeting_link_kind", ctx.exception.detail)
+        self.assertIn("Google", str(ctx.exception.detail["meeting_link_kind"]))
+
+    def test_teams_kind_raises_when_microsoft_not_connected(self):
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+        from rest_framework.exceptions import ValidationError
+
+        g = _make_google_svc(self.user, email="kind@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        with self.assertRaises(ValidationError) as ctx:
+            _resolve_write_provider_for_kind(self.user, "teams")
+        self.assertIn("meeting_link_kind", ctx.exception.detail)
+        self.assertIn("Microsoft", str(ctx.exception.detail["meeting_link_kind"]))
+
+    def test_invalid_kind_raises_validation_error(self):
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+        from rest_framework.exceptions import ValidationError
+
+        g = _make_google_svc(self.user, email="kind@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        with self.assertRaises(ValidationError) as ctx:
+            _resolve_write_provider_for_kind(self.user, "zoom")
+        self.assertIn("meeting_link_kind", ctx.exception.detail)
+
+
+@override_settings(FRONTEND_BASE_URL="http://localhost:3000", TIME_ZONE="UTC")
+class CreateBookingMeetingLinkKindTests(TestCase):
+    """B2: create_booking routes to correct provider via meeting_link_kind."""
+
+    def setUp(self):
+        self.host = User.objects.create_user(email="host@b2.local", password="pw123")
+        self.attendee = User.objects.create_user(email="att@b2.local", password="pw123")
+        from apps.teams.models import Team, Membership
+        team = Team.objects.create(name="B2Team")
+        Membership.objects.create(team=team, user=self.host, role=Membership.Role.ADMIN)
+        Membership.objects.create(team=team, user=self.attendee, role=Membership.Role.MEMBER)
+
+    def _make_providers(self):
+        g = _make_google_svc(self.host, email="host@gmail.com")
+        m = _make_microsoft_svc(self.host, email="host@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.host, google_account=g, microsoft_account=m
+        )
+        return g, m
+
+    def test_create_booking_meeting_link_kind_teams_routes_to_microsoft(self):
+        """meeting_link_kind='teams' → Booking.provider == 'microsoft'."""
+        g, m = self._make_providers()
+        start, end = _future_slot()
+        ms_provider = MagicMock()
+        ms_provider.name = "microsoft"
+        ms_provider.write_calendar_id = ""
+        ms_provider.create_event.return_value = {"id": "ms-evt-1", "webLink": "https://outlook.com/e/ms-evt-1"}
+
+        with patch("apps.scheduling.services._resolve_write_provider_for_kind", return_value=ms_provider):
+            result = create_booking(
+                self.host,
+                start=start,
+                end=end,
+                attendee_user_ids=[self.attendee.pk],
+                meeting_link_kind="teams",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        booking = Booking.objects.get(uuid=result["booking_uuid"])
+        self.assertEqual(booking.provider, "microsoft")
+        self.assertEqual(booking.meeting_link_kind, "teams")
+
+    def test_create_booking_meeting_link_kind_google_meet_routes_to_google(self):
+        """meeting_link_kind='google_meet' → Booking.provider == 'google'."""
+        g, m = self._make_providers()
+        start, end = _future_slot()
+        google_provider = _mock_provider("goog-evt-1")
+
+        with patch("apps.scheduling.services._resolve_write_provider_for_kind", return_value=google_provider):
+            result = create_booking(
+                self.host,
+                start=start,
+                end=end,
+                attendee_user_ids=[self.attendee.pk],
+                meeting_link_kind="google_meet",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        booking = Booking.objects.get(uuid=result["booking_uuid"])
+        self.assertEqual(booking.provider, "google")
+        self.assertEqual(booking.meeting_link_kind, "google_meet")
+
+    def test_create_booking_requested_provider_not_connected_raises_validation_error(self):
+        """meeting_link_kind='teams' when only Google connected → ValidationError."""
+        g = _make_google_svc(self.host, email="host@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.host, google_account=g)
+
+        start, end = _future_slot()
+        with self.assertRaises(Exception) as ctx:
+            create_booking(
+                self.host,
+                start=start,
+                end=end,
+                attendee_user_ids=[self.attendee.pk],
+                meeting_link_kind="teams",
+            )
+        # Expect a DRF ValidationError keyed on "meeting_link_kind".
+        from rest_framework.exceptions import ValidationError
+        self.assertIsInstance(ctx.exception, ValidationError)
+        self.assertIn("meeting_link_kind", ctx.exception.detail)
+        self.assertIn("Microsoft", str(ctx.exception.detail["meeting_link_kind"]))

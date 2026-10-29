@@ -1466,3 +1466,74 @@ class ProviderPickerTests(TestCase):
         self.assertIsNotNone(p)
         self.assertEqual(p.name, "google")
         self.assertEqual(p.write_calendar_id, "primary")
+
+
+# ---------------------------------------------------------------------------
+# Task B2: PublicMeetingCreateView persists meeting_link_kind
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    FRONTEND_BASE_URL="http://localhost:3000",
+    TIME_ZONE="UTC",
+)
+class PublicMeetingMeetingLinkKindTests(TestCase):
+    """POST /api/public/meetings/<token> with meeting_link_kind persists the field
+    and routes to the requested provider."""
+
+    def setUp(self):
+        from django.core.cache import cache as _cache
+        _cache.clear()
+        UserModel = get_user_model()
+        self.host = UserModel.objects.create_user(email="host@b2view.local", password="pwpw12345xyz")
+        self.host.share_enabled = True
+        self.host.save(update_fields=["share_enabled"])
+        _connect_google(self.host)
+        self.client = APIClient()
+
+    def _url(self):
+        return reverse("public-meetings-create", args=[str(self.host.share_token)])
+
+    def _post(self, **overrides):
+        start, end = _future_slot()
+        body = {
+            "visitor_name": "Kind Visitor",
+            "visitor_email": "kind@example.com",
+            "start": start,
+            "end": end,
+            "kind": "online",
+        }
+        body.update(overrides)
+        return self.client.post(self._url(), body, format="json")
+
+    def test_public_meeting_create_persists_meeting_link_kind_auto(self):
+        """Default (no meeting_link_kind sent) → Booking.meeting_link_kind == 'auto'."""
+        with patch("apps.scheduling.views.create_calendar_event") as mc:
+            mc.return_value = {"id": "evt-auto", "htmlLink": "https://cal.google.com/e/evt-auto"}
+            resp = self._post()
+        self.assertEqual(resp.status_code, 201, resp.content)
+        booking = Booking.objects.order_by("-created_at").first()
+        self.assertIsNotNone(booking)
+        self.assertEqual(booking.meeting_link_kind, "auto")
+
+    def test_public_meeting_create_persists_meeting_link_kind_google_meet(self):
+        """meeting_link_kind='google_meet' → Booking.meeting_link_kind == 'google_meet'."""
+        with patch("apps.scheduling.views.create_calendar_event") as mc:
+            mc.return_value = {"id": "evt-gm", "htmlLink": "https://cal.google.com/e/evt-gm"}
+            resp = self._post(meeting_link_kind="google_meet")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        booking = Booking.objects.order_by("-created_at").first()
+        self.assertIsNotNone(booking)
+        self.assertEqual(booking.meeting_link_kind, "google_meet")
+
+    def test_public_meeting_create_invalid_meeting_link_kind_returns_400(self):
+        """meeting_link_kind='zoom' → 400 with meeting_link_kind key."""
+        resp = self._post(meeting_link_kind="zoom")
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("meeting_link_kind", resp.json())
+
+    def test_public_meeting_create_teams_when_only_google_connected_returns_400(self):
+        """meeting_link_kind='teams' but host has no MS → 400 with meeting_link_kind key."""
+        resp = self._post(meeting_link_kind="teams")
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("meeting_link_kind", resp.json())
