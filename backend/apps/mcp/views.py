@@ -43,6 +43,14 @@ class ToolsListView(MCPAPIView):
             ],
         })
 
+    # MCP clients vary on the HTTP method used to list tools — the spec
+    # (2024-11-05) is JSON-RPC over HTTP, which many clients implement as
+    # POST with an empty body. Accept POST too so Personal Hub, Claude
+    # Desktop and any JSON-RPC-style client probe can succeed without
+    # client-side method rewriting.
+    def post(self, request):
+        return self.get(request)
+
 
 class ToolsCallView(MCPAPIView):
     authentication_classes = [MCPTokenAuthentication]
