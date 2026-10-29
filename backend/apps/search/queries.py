@@ -128,9 +128,11 @@ def busy_intervals_for_users(
 def _merge_intervals(
     intervals: list[tuple[datetime, datetime]],
 ) -> list[tuple[datetime, datetime]]:
-    """Merge overlapping (start, end) intervals. Input need not be sorted;
-    output is sorted by start.  Adjacent-but-not-overlapping intervals stay
-    separate (``s <= last_e`` for overlap, strict less-than for touching)."""
+    """Merge overlapping or touching (start, end) intervals. Input need not be
+    sorted; output is sorted by start.  Two intervals touch when the end of one
+    equals the start of the next; they are merged into one (``s <= last_e``
+    covers both overlap and touching, so ``[10:00–11:00]`` + ``[11:00–12:00]``
+    → ``[10:00–12:00]``)."""
     if not intervals:
         return []
     items = sorted(intervals, key=lambda x: x[0])

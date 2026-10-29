@@ -191,3 +191,70 @@ class TeammateAvailabilityOAuthBusyTests(TestCase):
             any(s <= BUSY_START and e >= BUSY_END for s, e in busy),
             f"Expected secondary-calendar OAuthBusyWindow; got: {busy}",
         )
+
+
+class PublicProfileOAuthBusyTests(TestCase):
+    """GET /api/public/profile/<token> must include OAuthBusyWindow rows.
+
+    This is the most user-visible manifestation of the CalendarEvent-only bug:
+    a visitor on /u/<token> sees the host as free even when sync_oauth_busy has
+    correctly populated OAuthBusyWindow.
+    """
+
+    def setUp(self):
+        self.host = _make_user("host_public@example.com")
+        # Enable public profile so PublicProfileView returns 200.
+        self.host.share_enabled = True
+        self.host.save(update_fields=["share_enabled"])
+
+        self.g = _make_google_account(self.host)
+
+        # Anonymous client — PublicProfileView has no auth requirement.
+        self.client = APIClient()
+
+    def test_oauth_busy_appears_in_public_profile(self):
+        """OAuthBusyWindow 10:00-12:00 UTC must appear in /api/public/profile/<token> busy list.
+
+        Before the fix, PublicProfileView read only CalendarEvent + Unavailability,
+        so OAuth-synced busy windows were invisible to anonymous visitors.
+        """
+        _make_oauth_busy(self.host, self.g, calendar_id="primary")
+
+        resp = self.client.get(
+            f"/api/public/profile/{self.host.share_token}",
+            {"from": WINDOW_FROM, "to": WINDOW_TO},
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+        busy = _busy_instants(resp.data)
+        self.assertTrue(
+            any(s <= BUSY_START and e >= BUSY_END for s, e in busy),
+            f"Expected OAuthBusyWindow {BUSY_START}–{BUSY_END} UTC in public profile busy list; got: {busy}",
+        )
+
+    def test_oauth_busy_secondary_calendar_appears_in_public_profile(self):
+        """Secondary-calendar OAuthBusyWindow must also surface on the public profile."""
+        secondary_cal_id = "c_a2bd8e4c123abc456def789012345678@group.calendar.google.com"
+        _make_oauth_busy(self.host, self.g, calendar_id=secondary_cal_id)
+
+        resp = self.client.get(
+            f"/api/public/profile/{self.host.share_token}",
+            {"from": WINDOW_FROM, "to": WINDOW_TO},
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+        busy = _busy_instants(resp.data)
+        self.assertTrue(
+            any(s <= BUSY_START and e >= BUSY_END for s, e in busy),
+            f"Expected secondary-calendar OAuthBusyWindow in public profile; got: {busy}",
+        )
+
+    def test_no_oauth_busy_yields_empty_busy_list_on_public_profile(self):
+        """Without OAuthBusyWindow rows the public profile must return an empty busy list."""
+        resp = self.client.get(
+            f"/api/public/profile/{self.host.share_token}",
+            {"from": WINDOW_FROM, "to": WINDOW_TO},
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        busy = _busy_instants(resp.data)
+        self.assertEqual(busy, [])

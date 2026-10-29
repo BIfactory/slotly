@@ -480,3 +480,63 @@ class GraphClientTimezonePreferHeaderTests(TestCase):
             'outlook.timezone="UTC"',
             'Prefer header must be exactly: outlook.timezone="UTC"',
         )
+
+
+# ---------------------------------------------------------------------------
+# _host_availability_for_reschedule must see OAuthBusyWindow
+# ---------------------------------------------------------------------------
+
+class HostAvailabilityForRescheduleOAuthBusyTests(TestCase):
+    """_host_availability_for_reschedule must include OAuthBusyWindow rows.
+
+    Previously the helper read only CalendarEvent + Unavailability, which meant
+    a visitor trying to reschedule saw the host as free during OAuth-synced blocks.
+    """
+
+    def setUp(self):
+        self.host = User.objects.create_user(email="reschedule_host@x.com", password="x" * 12)
+        self.g = GoogleAccount.objects.create(
+            user=self.host,
+            google_email="reschedule_host@gmail.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )
+
+    def _call(self):
+        from apps.scheduling.views import _host_availability_for_reschedule
+        return _host_availability_for_reschedule(self.host)
+
+    def test_oauth_busy_appears_in_reschedule_availability(self):
+        """OAuthBusyWindow row must appear in the busy list returned by the helper."""
+        now = datetime.now(timezone.utc)
+        busy_start = now + timedelta(hours=2)
+        busy_end = now + timedelta(hours=3)
+
+        OAuthBusyWindow.objects.create(
+            user=self.host,
+            provider="google",
+            google_account=self.g,
+            calendar_id="primary",
+            starts_at=busy_start,
+            ends_at=busy_end,
+        )
+
+        result = self._call()
+        busy = [
+            (
+                datetime.fromisoformat(item["start"].replace("Z", "+00:00")).astimezone(timezone.utc),
+                datetime.fromisoformat(item["end"].replace("Z", "+00:00")).astimezone(timezone.utc),
+            )
+            for item in result["busy"]
+        ]
+
+        self.assertTrue(
+            any(s <= busy_start and e >= busy_end for s, e in busy),
+            f"Expected OAuthBusyWindow {busy_start}–{busy_end} UTC in reschedule busy list; got: {busy}",
+        )
+
+    def test_no_oauth_busy_yields_empty_busy_list_in_reschedule(self):
+        """Without OAuthBusyWindow rows the reschedule helper must return an empty busy list."""
+        result = self._call()
+        self.assertEqual(result["busy"], [])

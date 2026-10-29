@@ -363,24 +363,10 @@ class PublicProfileView(APIView):
         if (window_end - window_start) > timedelta(days=84):
             window_end = window_start + timedelta(days=84)
 
-        # Aggregate busy intervals from calendars + manual unavailability blocks.
-        # All-day events count as busy regardless of TRANSP — see SearchView.
-        from django.db.models import Q as _Q
-        busy: list[tuple] = []
-        for ev in CalendarEvent.objects.filter(
-            _Q(transp=CalendarEvent.Transparency.OPAQUE) | _Q(is_all_day=True),
-            calendar__owner_id=user.pk,
-            calendar__include_in_busy=True,
-            dtstart__lt=window_end,
-            dtend__gt=window_start,
-        ).exclude(status=CalendarEvent.Status.CANCELLED).values("dtstart", "dtend"):
-            busy.append((ev["dtstart"], ev["dtend"]))
-        for u in Unavailability.objects.filter(
-            user_id=user.pk,
-            starts_at__lt=window_end,
-            ends_at__gt=window_start,
-        ).values("starts_at", "ends_at"):
-            busy.append((u["starts_at"], u["ends_at"]))
+        # Union of CalendarEvent + OAuthBusyWindow + Unavailability via shared helper.
+        # Previously only CalendarEvent + Unavailability were read here, so
+        # OAuth-sourced busy windows were invisible on the public /u/<token> page.
+        busy = _busy_intervals_for_users([user.pk], window_start, window_end).get(user.pk, [])
         busy = _inflate_busy(busy, user.buffer_before_min, user.buffer_after_min)
 
         profile = PublicProfileSerializer(user, context={"request": request}).data
