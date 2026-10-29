@@ -89,6 +89,17 @@ function PublicProfilePageInner() {
     return new Map(data.holidays.map((h) => [h.date, h.name]));
   }, [data]);
 
+  /** Providers the host has connected AND whose booking toggle is on. */
+  const activeOnlineProviders = useMemo(() => {
+    if (!data) return [] as ("google" | "microsoft")[];
+    const all = data.host_providers ?? [];
+    return all.filter((p) => {
+      if (p === "google") return data.accepts_google_bookings !== false;
+      if (p === "microsoft") return data.accepts_microsoft_bookings !== false;
+      return true;
+    });
+  }, [data]);
+
   if (error === "not_found") {
     return (
       <main className="grid min-h-screen place-items-center bg-zinc-50 px-6 dark:bg-zinc-950">
@@ -170,7 +181,13 @@ function PublicProfilePageInner() {
       </header>
 
       <section className="mx-auto max-w-3xl px-6 py-8">
-        {data.booking_enabled === false && (
+        {activeOnlineProviders.length === 0 && data.booking_enabled === false ? (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
+            <p className="font-medium">
+              This user is not currently accepting bookings — contact them directly.
+            </p>
+          </div>
+        ) : data.booking_enabled === false ? (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
             <p className="font-medium">
               {display_name} isn&apos;t accepting direct bookings yet.
@@ -180,7 +197,7 @@ function PublicProfilePageInner() {
               another way to arrange a time.
             </p>
           </div>
-        )}
+        ) : null}
         {(data.meeting_types?.length ?? 0) > 0 && selectedType === null ? (
           // Landing: pick a meeting type first.
           <TypeList
@@ -203,7 +220,7 @@ function PublicProfilePageInner() {
                 Back to meeting types
               </button>
             )}
-            {(data.host_providers?.length ?? 0) >= 2 && (
+            {activeOnlineProviders.length >= 2 && (
               <fieldset className="mb-4 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
                 <legend className="px-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
                   Meeting link

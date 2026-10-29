@@ -32,6 +32,12 @@ export type PublicProfileResponse = {
    * Used to conditionally show the meeting-link selector on the public
    * booking page (only shown when length >= 2). */
   host_providers?: ("google" | "microsoft")[];
+  /** Whether the host has Google calendar bookings enabled.
+   * Only present on /api/public/profile/<token>. */
+  accepts_google_bookings?: boolean;
+  /** Whether the host has Microsoft calendar bookings enabled.
+   * Only present on /api/public/profile/<token>. */
+  accepts_microsoft_bookings?: boolean;
 };
 
 export class PublicProfileNotFoundError extends Error {

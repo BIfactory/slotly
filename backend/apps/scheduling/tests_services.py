@@ -802,3 +802,84 @@ class CreateBookingMeetingLinkKindTests(TestCase):
         self.assertIsInstance(ctx.exception, ValidationError)
         self.assertIn("meeting_link_kind", ctx.exception.detail)
         self.assertIn("Microsoft", str(ctx.exception.detail["meeting_link_kind"]))
+
+
+# ---------------------------------------------------------------------------
+# Task F3: per-provider booking-toggle enforcement in _resolve_write_provider_for_kind
+# ---------------------------------------------------------------------------
+
+
+@override_settings(FRONTEND_BASE_URL="http://localhost:3000", TIME_ZONE="UTC")
+class ResolveWriteProviderToggleTests(TestCase):
+    """F3: _resolve_write_provider_for_kind respects accepts_*_bookings toggles."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="toggle@slotly.test", password="x" * 12)
+
+    def _make_providers(self):
+        g = _make_google_svc(self.user, email="toggle@gmail.com")
+        m = _make_microsoft_svc(self.user, email="toggle@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+        return g, m
+
+    def test_google_meet_raises_when_accepts_google_bookings_false(self):
+        """kind='google_meet' + accepts_google_bookings=False → ValidationError."""
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+
+        _make_providers = self._make_providers
+        _make_providers()
+        self.user.accepts_google_bookings = False
+        self.user.save()
+
+        with self.assertRaises(ValidationError) as ctx:
+            _resolve_write_provider_for_kind(self.user, "google_meet")
+
+        self.assertIn("meeting_link_kind", ctx.exception.detail)
+        self.assertIn(
+            "Google Meet", str(ctx.exception.detail["meeting_link_kind"])
+        )
+
+    def test_teams_raises_when_accepts_microsoft_bookings_false(self):
+        """kind='teams' + accepts_microsoft_bookings=False → ValidationError."""
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+
+        self._make_providers()
+        self.user.accepts_microsoft_bookings = False
+        self.user.save()
+
+        with self.assertRaises(ValidationError) as ctx:
+            _resolve_write_provider_for_kind(self.user, "teams")
+
+        self.assertIn("meeting_link_kind", ctx.exception.detail)
+        self.assertIn(
+            "Teams", str(ctx.exception.detail["meeting_link_kind"])
+        )
+
+    def test_auto_falls_back_to_microsoft_when_google_toggle_off(self):
+        """kind='auto' + Google toggle off + Microsoft connected+on → picks Microsoft."""
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+
+        self._make_providers()
+        self.user.accepts_google_bookings = False
+        self.user.save()
+
+        provider = _resolve_write_provider_for_kind(self.user, "auto")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "microsoft")
+
+    def test_auto_raises_when_both_toggles_off(self):
+        """kind='auto' + both toggles False → ValidationError."""
+        from apps.scheduling.services import _resolve_write_provider_for_kind
+
+        self._make_providers()
+        self.user.accepts_google_bookings = False
+        self.user.accepts_microsoft_bookings = False
+        self.user.save()
+
+        with self.assertRaises(ValidationError) as ctx:
+            _resolve_write_provider_for_kind(self.user, "auto")
+
+        # Should raise under the 'detail' key (not 'meeting_link_kind').
+        self.assertIn("detail", ctx.exception.detail)

@@ -99,27 +99,66 @@ class _WriteProvider:
 def _resolve_write_provider_for_kind(host, kind: str) -> "_WriteProvider | None":
     """Map a ``meeting_link_kind`` value to the right write provider.
 
-    ``kind == "google_meet"``  → force Google; raise ValidationError when not connected.
-    ``kind == "teams"``        → force Microsoft; raise ValidationError when not connected.
-    ``kind == "auto"``         → use primary provider (back-compat, same as None).
-    ``kind == "none"``         → use primary provider (video-suppression is handled elsewhere).
+    ``kind == "google_meet"``  → force Google; raise ValidationError when not connected
+                                 OR host.accepts_google_bookings is False.
+    ``kind == "teams"``        → force Microsoft; raise ValidationError when not connected
+                                 OR host.accepts_microsoft_bookings is False.
+    ``kind == "auto"``         → prefer primary toggled-on provider; fall back to secondary
+                                 if primary's toggle is off; raise if both off (or none connected).
+    ``kind == "none"``         → same as "auto" (video-suppression handled elsewhere).
     Any other value            → raise ValidationError({"meeting_link_kind": "invalid"}).
 
     Raises:
-        ValidationError — requested provider not connected, or unrecognised kind.
+        ValidationError — requested provider not connected, toggle disabled, or unrecognised kind.
     """
     if kind == "google_meet":
+        if not getattr(host, "accepts_google_bookings", True):
+            raise ValidationError(
+                {"meeting_link_kind": "This host isn't accepting Google Meet bookings"},
+            )
         provider = _pick_write_provider(host, provider="google")
         if provider is None:
             raise ValidationError({"meeting_link_kind": "Google is not connected"})
         return provider
     if kind == "teams":
+        if not getattr(host, "accepts_microsoft_bookings", True):
+            raise ValidationError(
+                {"meeting_link_kind": "This host isn't accepting Microsoft Teams bookings"},
+            )
         provider = _pick_write_provider(host, provider="microsoft")
         if provider is None:
             raise ValidationError({"meeting_link_kind": "Microsoft is not connected"})
         return provider
     if kind in ("auto", "none"):
-        return _pick_write_provider(host)
+        # Prefer the primary (default) provider, but only if its toggle is on.
+        # Fall back to the secondary provider if primary's toggle is off.
+        # Raise if both are toggled off or neither is connected.
+        google_ok = getattr(host, "accepts_google_bookings", True)
+        microsoft_ok = getattr(host, "accepts_microsoft_bookings", True)
+
+        # Try Google first (existing primary preference).
+        if google_ok:
+            provider = _pick_write_provider(host, provider="google")
+            if provider is not None:
+                return provider
+        # Fall back to Microsoft.
+        if microsoft_ok:
+            provider = _pick_write_provider(host, provider="microsoft")
+            if provider is not None:
+                return provider
+        # Both off or no accounts connected at all.
+        # If at least one account exists but both toggles are off, raise a clear error.
+        from .models import GoogleAccount, MicrosoftAccount
+        has_any = (
+            GoogleAccount.objects.filter(user=host).exists()
+            or MicrosoftAccount.objects.filter(user=host).exists()
+        )
+        if has_any:
+            raise ValidationError(
+                {"detail": "This host is not currently accepting online bookings."},
+            )
+        # No accounts at all — return None so caller raises the "connect a calendar" error.
+        return None
     raise ValidationError({"meeting_link_kind": "invalid"})
 
 
