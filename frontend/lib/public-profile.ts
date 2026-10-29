@@ -38,6 +38,14 @@ export type PublicProfileResponse = {
   /** Whether the host has Microsoft calendar bookings enabled.
    * Only present on /api/public/profile/<token>. */
   accepts_microsoft_bookings?: boolean;
+  /** Host's predefined in-person locations. Empty array when none are set.
+   * Sorted: default row first, then alphabetical by name. */
+  host_locations?: Array<{
+    id: number;
+    name: string;
+    address: string;
+    is_default: boolean;
+  }>;
 };
 
 export class PublicProfileNotFoundError extends Error {

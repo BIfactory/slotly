@@ -49,6 +49,13 @@ export type LockedMeetingType = {
   questions?: MeetingTypeQuestion[];
 };
 
+export type HostLocation = {
+  id: number;
+  name: string;
+  address: string;
+  is_default: boolean;
+};
+
 export function BookingDialog({
   open,
   onClose,
@@ -63,6 +70,8 @@ export function BookingDialog({
   hostName,
   allowPhysical = false,
   lockedType = null,
+  hostLocations = [],
+  defaultKind = "online",
 }: {
   open: boolean;
   onClose: () => void;
@@ -87,6 +96,12 @@ export function BookingDialog({
    * type — no toggles, single-choice chip pickers, title auto-fills to
    * the type's name. Overrides `allowPhysical`. */
   lockedType?: LockedMeetingType | null;
+  /** Host's predefined in-person locations. When non-empty and kind is
+   * "physical", a picker is shown above the free-form address input. */
+  hostLocations?: HostLocation[];
+  /** Initial kind when the dialog opens in the generic (no-type) flow.
+   * Defaults to "online". Pass "physical" for in-person-only hosts. */
+  defaultKind?: BookingKind;
 }) {
   const [title, setTitle] = useState(defaultTitle);
   const [notes, setNotes] = useState("");
@@ -106,6 +121,10 @@ export function BookingDialog({
   // Honeypot — off-screen text field that legit users never see. Bots
   // that greedily fill every input trip it and get silently 204'd.
   const [hp, setHp] = useState("");
+  // Selected host location id, or "custom" when the visitor wants to type
+  // their own address. null means the picker hasn't been shown yet (no host
+  // locations, or not physical kind).
+  const [pickedLocationId, setPickedLocationId] = useState<number | "custom" | null>(null);
 
   // Only offer durations that actually fit the clicked free block, so the
   // user can't pick "2h" inside a 30-minute gap and hit a confusing error
@@ -150,8 +169,8 @@ export function BookingDialog({
     setNotes("");
     setVisitorName("");
     setVisitorEmail("");
-    setKind(lockedType?.kind ?? "online");
-    setLocation(lockedType?.location ?? "");
+    const initialKind = lockedType?.kind ?? defaultKind;
+    setKind(initialKind);
     setHp("");
     setShowNotes(false);
     setAnswers({});
@@ -162,7 +181,23 @@ export function BookingDialog({
         ?? intervalLenMin);
     setDurationMin(initialDuration);
     setStartMin(null);
-  }, [open, interval, defaultTitle, defaultDurationMin, intervalLenMin, lockedType]);
+
+    // Location picker default selection for physical kind.
+    // When the dialog is locked to a specific type that has a location, that
+    // location wins. Otherwise, if there are host locations and the kind is
+    // physical (or could be physical), pre-select the default location.
+    if (lockedType?.location) {
+      setLocation(lockedType.location);
+      setPickedLocationId(null);
+    } else if (hostLocations.length > 0) {
+      const defaultLoc = hostLocations.find((l) => l.is_default) ?? hostLocations[0];
+      setPickedLocationId(defaultLoc.id);
+      setLocation(defaultLoc.address);
+    } else {
+      setLocation("");
+      setPickedLocationId(null);
+    }
+  }, [open, interval, defaultTitle, defaultDurationMin, intervalLenMin, lockedType, hostLocations, defaultKind]);
 
   // If the current start becomes invalid (duration change shifts the last-
   // allowed start earlier), snap to the earliest still-valid option.
@@ -328,15 +363,108 @@ export function BookingDialog({
             </fieldset>
           )}
 
-          {kind === "physical" && (
+          {kind === "physical" && hostLocations.length > 0 && (
             <div className="space-y-1">
-              <MicroLabel htmlFor="location">Where</MicroLabel>
+              <MicroLabel>Pick a location</MicroLabel>
+              {hostLocations.length <= 3 ? (
+                // Radio list for 1–3 locations.
+                <div className="space-y-1.5">
+                  {hostLocations.map((loc) => (
+                    <label
+                      key={loc.id}
+                      className={
+                        "flex cursor-pointer items-start gap-2.5 rounded-lg border p-2.5 text-sm transition-colors " +
+                        (pickedLocationId === loc.id
+                          ? "border-amber-500 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/30"
+                          : "border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600")
+                      }
+                    >
+                      <input
+                        type="radio"
+                        name="host_location"
+                        value={loc.id}
+                        checked={pickedLocationId === loc.id}
+                        onChange={() => {
+                          setPickedLocationId(loc.id);
+                          setLocation(loc.address);
+                        }}
+                        className="mt-0.5 accent-amber-600 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-zinc-900 dark:text-zinc-50">
+                          {loc.name}
+                        </div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
+                          {loc.address}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                  <label
+                    className={
+                      "flex cursor-pointer items-center gap-2.5 rounded-lg border p-2.5 text-sm transition-colors " +
+                      (pickedLocationId === "custom"
+                        ? "border-amber-500 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/30"
+                        : "border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600")
+                    }
+                  >
+                    <input
+                      type="radio"
+                      name="host_location"
+                      value="custom"
+                      checked={pickedLocationId === "custom"}
+                      onChange={() => {
+                        setPickedLocationId("custom");
+                        setLocation("");
+                      }}
+                      className="accent-amber-600 shrink-0"
+                    />
+                    <span className="text-zinc-600 dark:text-zinc-400">Enter a different address</span>
+                  </label>
+                </div>
+              ) : (
+                // Select dropdown for 4+ locations.
+                <select
+                  value={pickedLocationId ?? ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === "custom") {
+                      setPickedLocationId("custom");
+                      setLocation("");
+                    } else {
+                      const id = Number(val);
+                      const found = hostLocations.find((l) => l.id === id);
+                      setPickedLocationId(id);
+                      if (found) setLocation(found.address);
+                    }
+                  }}
+                  className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                >
+                  {hostLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.name} — {loc.address}
+                    </option>
+                  ))}
+                  <option value="custom">Enter a different address…</option>
+                </select>
+              )}
+            </div>
+          )}
+
+          {kind === "physical" && (hostLocations.length === 0 || pickedLocationId === "custom") && (
+            <div className="space-y-1">
+              <MicroLabel htmlFor="location">
+                {hostLocations.length > 0 ? "Your address" : "Where"}
+              </MicroLabel>
               <AddressAutocomplete
                 id="location"
                 value={location}
-                onChange={setLocation}
+                onChange={(v) => {
+                  setLocation(v);
+                }}
                 placeholder="Address, café, meeting room…"
                 required
+                autoFocus={pickedLocationId === "custom"}
               />
             </div>
           )}
