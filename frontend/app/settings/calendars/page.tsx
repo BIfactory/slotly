@@ -15,6 +15,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { AuthedHeader } from "@/components/AuthedHeader";
+import { SettingsLayout } from "@/components/SettingsLayout";
 import { SettingsNav } from "@/components/SettingsNav";
 import { ProviderBadge } from "@/components/ProviderBadge";
 import { CardSkeleton, ListSkeleton, PageSkeleton } from "@/components/Skeleton";
@@ -294,7 +295,7 @@ function CalendarsPageInner() {
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <AuthedHeader email={email} />
 
-      <main className="mx-auto max-w-2xl space-y-6 px-6 py-10">
+      <SettingsLayout width="wide">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             Your calendars
@@ -431,7 +432,7 @@ function CalendarsPageInner() {
           <BusyRulesHelp />
           <CalendarList calendars={calendars} onChange={setCalendars} />
         </section>
-      </main>
+      </SettingsLayout>
     </div>
   );
 }

@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Copy, KeyRound, X } from "lucide-react";
 import { AuthedHeader } from "@/components/AuthedHeader";
+import { SettingsLayout } from "@/components/SettingsLayout";
 import { SettingsNav } from "@/components/SettingsNav";
 import { CardSkeleton, ListSkeleton, PageSkeleton } from "@/components/Skeleton";
 import { Button, FormError, Input, Label } from "@/components/ui";
@@ -146,7 +147,7 @@ function ApiTokensPageInner() {
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <AuthedHeader email={email} />
 
-      <main className="mx-auto max-w-5xl space-y-6 px-6 py-10">
+      <SettingsLayout width="wide">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             API tokens
@@ -196,7 +197,7 @@ function ApiTokensPageInner() {
           </header>
           <TokenTable tokens={tokens} onRevoke={onRevoke} onViewCalls={onViewCalls} />
         </section>
-      </main>
+      </SettingsLayout>
 
       {/* Calls modal */}
       {callsModal && (
