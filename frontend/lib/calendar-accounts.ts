@@ -11,6 +11,11 @@ export type CalendarAccount = {
   provider: "google" | "microsoft";
   email: string;
   write_calendar_id: string;
+  /**
+   * True if this account is the user's default for its own provider.
+   * A user with both a Google default and a Microsoft default will have
+   * two accounts with is_default=true simultaneously (one per provider).
+   */
   is_default: boolean;
   created_at: string;
 };
@@ -32,8 +37,19 @@ export async function listCalendarAccounts(): Promise<CalendarAccount[]> {
   return data.accounts;
 }
 
-/** Mark an account as the default (one across all providers). */
-export async function setDefaultAccount(id: string): Promise<void> {
+export type SetDefaultResult = {
+  google_default_id: string | null;
+  microsoft_default_id: string | null;
+};
+
+/**
+ * Mark an account as the default for its provider.
+ * Returns the current per-provider default IDs so the caller can update
+ * UI state without a round-trip: google_default_id and microsoft_default_id
+ * each hold a composite id (e.g. "g:3") or null if no default is set for
+ * that provider.
+ */
+export async function setDefaultAccount(id: string): Promise<SetDefaultResult> {
   const res = await fetch(`/api/calendar-accounts/${encodeURIComponent(id)}/set-default`, {
     method: "POST",
     credentials: "include",
@@ -43,6 +59,16 @@ export async function setDefaultAccount(id: string): Promise<void> {
     const body = (await res.json().catch(() => ({}))) as { detail?: string };
     throw new Error(body.detail ?? `HTTP ${res.status}`);
   }
+  const data = (await res.json()) as {
+    status: string;
+    default: string;
+    google_default_id: string | null;
+    microsoft_default_id: string | null;
+  };
+  return {
+    google_default_id: data.google_default_id,
+    microsoft_default_id: data.microsoft_default_id,
+  };
 }
 
 /** Delete (disconnect) a single calendar account. */

@@ -953,7 +953,8 @@ class CalendarAccountSetDefaultView(APIView):
         except ValueError:
             return Response({"detail": "Account not found."}, status=404)
 
-        # Upsert WriteCalendarDefault for this user.
+        # Upsert WriteCalendarDefault for this user, touching ONLY the matching
+        # provider's FK so the other provider's default is preserved.
         default = WriteCalendarDefault.objects.filter(user=request.user).first()
         if default is None:
             if provider == "google":
@@ -967,13 +968,22 @@ class CalendarAccountSetDefaultView(APIView):
         else:
             if provider == "google":
                 default.google_account = account
-                default.microsoft_account = None
+                default.save(update_fields=["google_account"])
             else:
                 default.microsoft_account = account
-                default.google_account = None
-            default.save(update_fields=["google_account", "microsoft_account"])
+                default.save(update_fields=["microsoft_account"])
 
-        return Response({"status": "ok", "default": composite_id})
+        # Re-read to get both FK values after the save.
+        default = WriteCalendarDefault.objects.filter(user=request.user).first()
+        google_pk = default.google_account_id if default else None
+        microsoft_pk = default.microsoft_account_id if default else None
+
+        return Response({
+            "status": "ok",
+            "default": composite_id,
+            "google_default_id": f"g:{google_pk}" if google_pk is not None else None,
+            "microsoft_default_id": f"m:{microsoft_pk}" if microsoft_pk is not None else None,
+        })
 
 
 # ---------------------------------------------------------------------------

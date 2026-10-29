@@ -42,7 +42,10 @@ def build_account_list(user) -> list[dict]:
     """Build the list of dicts that CalendarAccountSerializer will serialise.
 
     Combines all of the user's GoogleAccount and MicrosoftAccount rows and
-    marks the one pointed to by WriteCalendarDefault as is_default=True.
+    marks each account as is_default=True iff it is the default for its own
+    provider (i.e. Google account whose pk == wd.google_account_id, or MS
+    account whose pk == wd.microsoft_account_id).  A user who has set both a
+    Google default AND an MS default will see TWO accounts with is_default=True.
     Sorted by created_at descending (most-recently connected first).
     """
     from .models import GoogleAccount, MicrosoftAccount, WriteCalendarDefault

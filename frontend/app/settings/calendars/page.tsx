@@ -155,13 +155,33 @@ function CalendarsPageInner() {
   }, [calendars]);
 
   const handleSetDefault = useCallback(async (id: string) => {
+    // Determine which provider this account belongs to.
+    const clickedProvider = id.startsWith("g:") ? "google" : "microsoft";
+
     // Capture snapshot before optimistic update.
     const snapshot = accounts;
 
-    // Optimistic update.
-    setAccounts((prev) => prev.map((a) => ({ ...a, is_default: a.id === id })));
+    // Optimistic update: set is_default=true for the clicked account and
+    // clear is_default on other accounts of the SAME provider only.
+    // Accounts of the other provider keep their is_default state untouched.
+    setAccounts((prev) =>
+      prev.map((a) => {
+        if (a.provider !== clickedProvider) return a;
+        return { ...a, is_default: a.id === id };
+      }),
+    );
     try {
-      await setDefaultAccount(id);
+      const result = await setDefaultAccount(id);
+      // Server response tells us the canonical per-provider default IDs.
+      // Apply them to ensure UI is in sync without a round-trip.
+      setAccounts((prev) =>
+        prev.map((a) => ({
+          ...a,
+          is_default:
+            a.id === result.google_default_id ||
+            a.id === result.microsoft_default_id,
+        })),
+      );
     } catch (err) {
       // Revert to snapshot immediately on error.
       setAccounts(snapshot);
@@ -481,11 +501,12 @@ function AccountRow({
         </span>
       </td>
 
-      {/* Default radio */}
+      {/* Default radio — scoped per provider so Google and Microsoft radios
+           form two independent groups and switching one doesn't clear the other. */}
       <td className="px-4 py-3 text-center">
         <input
           type="radio"
-          name="default-account"
+          name={account.provider === "google" ? "google-default" : "microsoft-default"}
           value={account.id}
           checked={account.is_default}
           onChange={() => onSetDefault(account.id)}
