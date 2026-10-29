@@ -47,6 +47,9 @@ function PublicProfilePageInner() {
   const [bookingSubmitting, setBookingSubmitting] = useState(false);
   const [bookingError, setBookingError] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState<React.ReactNode | null>(null);
+  /** Visitor's preferred meeting-link provider. Only relevant (and only
+   * rendered) when the host has both Google and Microsoft connected. */
+  const [meetingLinkKind, setMeetingLinkKind] = useState<"auto" | "google_meet" | "teams">("auto");
 
   useEffect(() => {
     let alive = true;
@@ -200,6 +203,37 @@ function PublicProfilePageInner() {
                 Back to meeting types
               </button>
             )}
+            {(data.host_providers?.length ?? 0) >= 2 && (
+              <fieldset className="mb-4 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+                <legend className="px-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  Meeting link
+                </legend>
+                <div className="mt-2 flex flex-wrap gap-3">
+                  {(
+                    [
+                      { value: "auto", label: "Auto" },
+                      { value: "google_meet", label: "Google Meet" },
+                      { value: "teams", label: "Microsoft Teams" },
+                    ] as const
+                  ).map(({ value, label }) => (
+                    <label
+                      key={value}
+                      className="flex cursor-pointer items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300"
+                    >
+                      <input
+                        type="radio"
+                        name="meeting_link_kind"
+                        value={value}
+                        checked={meetingLinkKind === value}
+                        onChange={() => setMeetingLinkKind(value)}
+                        className="accent-indigo-600"
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
             <SlotsCalendar
               slots={slots}
               durationMin={selectedType?.duration_min ?? 30}
@@ -261,6 +295,8 @@ function PublicProfilePageInner() {
               location: v.location,
               typeSlug: selectedType?.slug,
               customAnswers: v.customAnswers,
+              // Only send when visitor explicitly picked a provider (not "auto").
+              meetingLinkKind: meetingLinkKind !== "auto" ? meetingLinkKind : undefined,
             });
             // Meeting type may configure a post-booking redirect URL —
             // typically the host's own "thank you" page for conversion

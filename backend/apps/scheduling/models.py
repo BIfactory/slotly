@@ -60,6 +60,27 @@ class GoogleAccount(models.Model):
         return f"{self.user_id}:{self.google_email}"
 
 
+class MeetingLinkKind(models.TextChoices):
+    """Controls which video-link (if any) Slotly requests when creating a
+    calendar event.
+
+    ``AUTO``         — use whatever the provider attaches by default (e.g.
+                       Google Meet for Google, Teams for Microsoft).
+    ``GOOGLE_MEET``  — explicitly request a Google Meet link.
+    ``TEAMS``        — explicitly request a Microsoft Teams meeting link.
+    ``NONE``         — strip any auto-generated video link from the event.
+
+    Both ``Booking`` and ``MeetingType`` share this class so that the host
+    preset (``MeetingType.meeting_link_kind``) and the per-booking override
+    (``Booking.meeting_link_kind``) express the same vocabulary.
+    """
+
+    AUTO = "auto", "Auto (use host's default)"
+    GOOGLE_MEET = "google_meet", "Google Meet"
+    TEAMS = "teams", "Microsoft Teams"
+    NONE = "none", "No video link"
+
+
 class MeetingType(models.Model):
     """Host-defined preset a visitor picks *before* they see any slots.
 
@@ -103,6 +124,16 @@ class MeetingType(models.Model):
     # typically a "thank you" page on the host's own site (Calendly-style
     # conversion tracking). Empty = show the inline success block instead.
     redirect_url = models.URLField(max_length=2000, blank=True)
+
+    # Host's preferred video-link mode for bookings on this meeting type.
+    # Defaults to "auto" — the provider's built-in video link is used as-is.
+    # Visitors landing on a booking page can override this at the Booking level
+    # (B2/B3 will expose a picker on the public page).
+    meeting_link_kind = models.CharField(
+        max_length=16,
+        choices=MeetingLinkKind.choices,
+        default=MeetingLinkKind.AUTO,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -189,6 +220,17 @@ class Booking(models.Model):
     # keyed by question id → answer string. Empty for bookings without
     # a meeting type or without questions on the picked type.
     custom_answers = models.JSONField(default=dict, blank=True)
+
+    # Visitor-level override for the video-link mode. Defaults to "auto" so
+    # that existing bookings continue to behave exactly as before. B2/B3 will
+    # expose a picker on the public booking page that writes a specific value
+    # here; the booking-creation service will read this when building the
+    # calendar event payload.
+    meeting_link_kind = models.CharField(
+        max_length=16,
+        choices=MeetingLinkKind.choices,
+        default=MeetingLinkKind.AUTO,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 

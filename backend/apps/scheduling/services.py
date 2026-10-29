@@ -96,6 +96,33 @@ class _WriteProvider:
         return _ms.delete_calendar_event(*args, **kwargs)
 
 
+def _resolve_write_provider_for_kind(host, kind: str) -> "_WriteProvider | None":
+    """Map a ``meeting_link_kind`` value to the right write provider.
+
+    ``kind == "google_meet"``  → force Google; raise ValidationError when not connected.
+    ``kind == "teams"``        → force Microsoft; raise ValidationError when not connected.
+    ``kind == "auto"``         → use primary provider (back-compat, same as None).
+    ``kind == "none"``         → use primary provider (video-suppression is handled elsewhere).
+    Any other value            → raise ValidationError({"meeting_link_kind": "invalid"}).
+
+    Raises:
+        ValidationError — requested provider not connected, or unrecognised kind.
+    """
+    if kind == "google_meet":
+        provider = _pick_write_provider(host, provider="google")
+        if provider is None:
+            raise ValidationError({"meeting_link_kind": "Google is not connected"})
+        return provider
+    if kind == "teams":
+        provider = _pick_write_provider(host, provider="microsoft")
+        if provider is None:
+            raise ValidationError({"meeting_link_kind": "Microsoft is not connected"})
+        return provider
+    if kind in ("auto", "none"):
+        return _pick_write_provider(host)
+    raise ValidationError({"meeting_link_kind": "invalid"})
+
+
 def _pick_write_provider(user, provider: str | None = None) -> _WriteProvider | None:
     """Choose which OAuth-connected provider should host the new event.
 
@@ -208,6 +235,7 @@ def create_booking(
     title: str = "",
     notes: str = "",
     meeting_type_id: int | None = None,
+    meeting_link_kind: str = "auto",
 ) -> dict[str, Any]:
     """Create a booking between a host and one or more Slotly users.
 
@@ -255,7 +283,7 @@ def create_booking(
             raise PermissionDenied({"detail": f"You're not connected to user {u.pk}."})
 
     # ── provider ─────────────────────────────────────────────────────────────
-    provider = _pick_write_provider(host_user)
+    provider = _resolve_write_provider_for_kind(host_user, meeting_link_kind)
     if provider is None:
         raise ValidationError({"detail": "Connect a calendar in /settings/calendars first."})
 
@@ -302,6 +330,7 @@ def create_booking(
         notes=final_notes,
         start_at=start,
         end_at=end,
+        meeting_link_kind=meeting_link_kind,
     )
     description = _description_with_manage_link(final_notes, booking)
 

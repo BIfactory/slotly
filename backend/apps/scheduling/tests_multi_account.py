@@ -5,12 +5,14 @@ refactor (Task 3).
 """
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
 from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 from apps.scheduling.models import GoogleAccount, MicrosoftAccount, WriteCalendarDefault
@@ -989,3 +991,57 @@ class PerProviderDefaultTests(TestCase):
         body = resp.json()
         self.assertIsNone(body["google_default_id"])
         self.assertEqual(body["microsoft_default_id"], f"m:{m.pk}")
+
+
+# ---------------------------------------------------------------------------
+# Task B3: host_providers in public profile response
+# ---------------------------------------------------------------------------
+
+
+class PublicProfileHostProvidersTests(TestCase):
+    """GET /api/public/profile/<token> must include host_providers — a sorted
+    list of OAuth provider names the host has connected."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _make_host(self):
+        u = User.objects.create_user(
+            email=f"host_{uuid.uuid4().hex[:8]}@b3.test",
+            password="x" * 12,
+        )
+        u.share_enabled = True
+        u.save(update_fields=["share_enabled"])
+        return u
+
+    def test_both_providers_returns_sorted_list(self):
+        host = self._make_host()
+        _make_google(host, email="b3g@gmail.com")
+        _make_microsoft(host, email="b3m@outlook.com")
+
+        r = self.client.get(f"/api/public/profile/{host.share_token}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(sorted(r.data["host_providers"]), ["google", "microsoft"])
+
+    def test_only_google_returns_google_list(self):
+        host = self._make_host()
+        _make_google(host, email="b3gonly@gmail.com")
+
+        r = self.client.get(f"/api/public/profile/{host.share_token}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["host_providers"], ["google"])
+
+    def test_only_microsoft_returns_microsoft_list(self):
+        host = self._make_host()
+        _make_microsoft(host, email="b3monly@outlook.com")
+
+        r = self.client.get(f"/api/public/profile/{host.share_token}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["host_providers"], ["microsoft"])
+
+    def test_no_oauth_returns_empty_list(self):
+        host = self._make_host()
+        # No GoogleAccount or MicrosoftAccount — ICS-only host.
+        r = self.client.get(f"/api/public/profile/{host.share_token}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["host_providers"], [])

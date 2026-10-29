@@ -11,6 +11,8 @@ export type MeetingTypeQuestion = {
   options?: string[];
 };
 
+export type MeetingLinkKind = "auto" | "google_meet" | "teams" | "none";
+
 export type MeetingType = {
   id: number;
   name: string;
@@ -24,6 +26,7 @@ export type MeetingType = {
   display_order: number;
   questions: MeetingTypeQuestion[];
   redirect_url: string;
+  meeting_link_kind: MeetingLinkKind;
 };
 
 /** Trimmed shape the public profile endpoint returns — no id/is_active
@@ -64,6 +67,7 @@ export type MeetingTypeInput = {
   display_order?: number;
   questions?: MeetingTypeQuestion[];
   redirect_url?: string;
+  meeting_link_kind?: MeetingLinkKind;
 };
 
 export async function createMeetingType(input: MeetingTypeInput): Promise<MeetingType> {

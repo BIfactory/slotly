@@ -27,6 +27,11 @@ export type PublicProfileResponse = {
    * means the host hasn't defined any and /u/[token] should show the
    * generic "pick any free time" flow. */
   meeting_types?: import("./meeting-types").PublicMeetingType[];
+  /** Sorted list of OAuth provider names the host has connected.
+   * Present when both or one are connected; empty array when neither.
+   * Used to conditionally show the meeting-link selector on the public
+   * booking page (only shown when length >= 2). */
+  host_providers?: ("google" | "microsoft")[];
 };
 
 export class PublicProfileNotFoundError extends Error {

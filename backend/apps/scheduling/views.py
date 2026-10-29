@@ -27,6 +27,7 @@ from django.utils import timezone as djtz
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
+from rest_framework.exceptions import ValidationError as _VE
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -1294,7 +1295,20 @@ class PublicMeetingCreateView(APIView):
                 "request_id": req.pk,
             }, status=202)
 
-        provider = _pick_write_provider(user)
+        # Resolve the video-link kind: client may send one explicitly; otherwise
+        # fall back to the meeting type's default (if a type is in play), or "auto".
+        raw_kind = body.get("meeting_link_kind")
+        if raw_kind is not None:
+            meeting_link_kind = str(raw_kind).strip()
+        elif meeting_type is not None:
+            meeting_link_kind = meeting_type.meeting_link_kind
+        else:
+            meeting_link_kind = "auto"
+
+        try:
+            provider = _resolve_write_provider_for_kind(user, meeting_link_kind)
+        except _VE as exc:
+            return Response(exc.detail, status=400)
         if provider is None:
             return Response(
                 {"detail": "The host hasn't set up direct booking yet."},
@@ -1344,6 +1358,7 @@ class PublicMeetingCreateView(APIView):
             custom_answers=custom_answers,
             start_at=start_dt,
             end_at=end_dt,
+            meeting_link_kind=meeting_link_kind,
         )
         description = _description_with_manage_link(base_description, booking)
 
@@ -1722,6 +1737,7 @@ def _serialize_meeting_type(t: MeetingType) -> dict:
         "display_order": t.display_order,
         "questions": list(t.questions or []),
         "redirect_url": t.redirect_url,
+        "meeting_link_kind": t.meeting_link_kind,
     }
 
 
@@ -1820,6 +1836,13 @@ def _validate_meeting_type_payload(
         if url and not (url.startswith("https://") or url.startswith("http://")):
             return {}, {"redirect_url": "Must start with http:// or https://."}
         cleaned["redirect_url"] = url
+
+    if "meeting_link_kind" in body:
+        mlk = str(_get("meeting_link_kind") or "").strip()
+        from .models import MeetingLinkKind as _MLK
+        if mlk not in _MLK.values:
+            return {}, {"meeting_link_kind": "invalid"}
+        cleaned["meeting_link_kind"] = mlk
 
     if "questions" in body:
         raw_questions = _get("questions") or []
@@ -2405,6 +2428,30 @@ def _provider_for(name: str) -> Any:
     if name == "microsoft":
         return _graph.create_calendar_event, _graph.delete_calendar_event
     raise ValueError(f"Unknown provider: {name}")
+
+
+def _resolve_write_provider_for_kind(host, kind: str) -> "_WriteProvider | None":
+    """Views-layer wrapper for meeting_link_kind → write provider resolution.
+
+    Mirrors services._resolve_write_provider_for_kind but uses the views-layer
+    _pick_write_provider so that unittest patches on the module-level
+    ``create_calendar_event`` name still land correctly for public-booking
+    view tests.  The duplication mirrors the existing _pick_write_provider
+    duplication documented at line 2325.
+    """
+    if kind == "google_meet":
+        p = _pick_write_provider(host, provider="google")
+        if p is None:
+            raise _VE({"meeting_link_kind": "Google is not connected"})
+        return p
+    if kind == "teams":
+        p = _pick_write_provider(host, provider="microsoft")
+        if p is None:
+            raise _VE({"meeting_link_kind": "Microsoft is not connected"})
+        return p
+    if kind in ("auto", "none"):
+        return _pick_write_provider(host)
+    raise _VE({"meeting_link_kind": "invalid"})
 
 
 def _parse_iso_dt(value):
