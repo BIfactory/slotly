@@ -495,29 +495,42 @@ function TokenTable({
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <table className="w-full text-sm">
-        <thead className="border-b border-zinc-200 bg-zinc-50/80 dark:border-zinc-800 dark:bg-zinc-900/60">
-          <tr>
-            {["Name", "Prefix", "Scopes", "Created", "Last used", "Status", "Actions"].map(
-              (h) => (
-                <th
-                  key={h}
-                  className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400"
-                >
-                  {h}
-                </th>
-              ),
-            )}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-          {tokens.map((t) => (
-            <TokenRow key={t.id} token={t} onRevoke={onRevoke} onViewCalls={onViewCalls} />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <>
+      {/* ── Desktop (≥md): 7-column table ── */}
+      <div className="hidden overflow-hidden rounded-xl border border-zinc-200 bg-white md:block dark:border-zinc-800 dark:bg-zinc-900">
+        <table className="w-full text-sm">
+          <thead className="border-b border-zinc-200 bg-zinc-50/80 dark:border-zinc-800 dark:bg-zinc-900/60">
+            <tr>
+              {["Name", "Prefix", "Scopes", "Created", "Last used", "Status", "Actions"].map(
+                (h) => (
+                  <th
+                    key={h}
+                    className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400"
+                  >
+                    {h}
+                  </th>
+                ),
+              )}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            {tokens.map((t) => (
+              <TokenRow key={t.id} token={t} onRevoke={onRevoke} onViewCalls={onViewCalls} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── Mobile (<md): stacked card list. 7 columns don't fit on narrow
+          viewports — the Actions column (View calls, Revoke) was clipped
+          off-screen so users couldn't revoke tokens. Same pattern as
+          /settings/calendars. ── */}
+      <div className="space-y-2 md:hidden">
+        {tokens.map((t) => (
+          <TokenCard key={t.id} token={t} onRevoke={onRevoke} onViewCalls={onViewCalls} />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -603,6 +616,100 @@ function TokenRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+function TokenCard({
+  token,
+  onRevoke,
+  onViewCalls,
+}: {
+  token: McpToken;
+  onRevoke: (t: McpToken) => void;
+  onViewCalls: (t: McpToken) => void;
+}) {
+  const created = new Date(token.created_at).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const lastUsed = token.last_used_at ? relativeTime(token.last_used_at) : "Never";
+  const hasWriteScope = token.scopes.some((s) => WRITE_SCOPES_SET.has(s));
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+      {/* Row 1: name + status badge */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-zinc-900 dark:text-zinc-50">{token.name}</span>
+            {hasWriteScope && (
+              <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                Write
+              </span>
+            )}
+          </div>
+          <p className="mt-1 font-mono text-xs text-zinc-500 dark:text-zinc-400">
+            {token.prefix}&hellip;
+          </p>
+        </div>
+        <span
+          className={
+            token.is_active
+              ? "shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+              : "shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+          }
+        >
+          {token.is_active ? "Active" : "Revoked"}
+        </span>
+      </div>
+
+      {/* Row 2: scopes */}
+      <div className="mt-3 flex flex-wrap gap-1">
+        {token.scopes.map((s) => (
+          <span
+            key={s}
+            className={
+              WRITE_SCOPES_SET.has(s)
+                ? "rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                : "rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
+            }
+          >
+            {s}
+          </span>
+        ))}
+      </div>
+
+      {/* Row 3: metadata */}
+      <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <dt className="text-zinc-500 dark:text-zinc-400">Created</dt>
+        <dd className="text-right text-zinc-700 dark:text-zinc-200">{created}</dd>
+        <dt className="text-zinc-500 dark:text-zinc-400">Last used</dt>
+        <dd className="text-right text-zinc-700 dark:text-zinc-200">{lastUsed}</dd>
+      </dl>
+
+      {/* Row 4: actions, right-aligned, ≥44px touch targets */}
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => onViewCalls(token)}
+          className="inline-flex min-h-[44px] items-center rounded-md border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+        >
+          View calls
+        </button>
+        {token.is_active && (
+          <button
+            type="button"
+            onClick={() => onRevoke(token)}
+            className="inline-flex min-h-[44px] items-center rounded-md border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
+          >
+            Revoke
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
