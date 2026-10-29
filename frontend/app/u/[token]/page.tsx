@@ -49,7 +49,7 @@ function PublicProfilePageInner() {
   const [bookingSuccess, setBookingSuccess] = useState<React.ReactNode | null>(null);
   /** Visitor's preferred meeting-link provider. Only relevant (and only
    * rendered) when the host has both Google and Microsoft connected. */
-  const [meetingLinkKind, setMeetingLinkKind] = useState<"auto" | "google" | "microsoft">("auto");
+  const [meetingLinkKind, setMeetingLinkKind] = useState<"auto" | "google_meet" | "teams">("auto");
 
   useEffect(() => {
     let alive = true;
@@ -212,8 +212,8 @@ function PublicProfilePageInner() {
                   {(
                     [
                       { value: "auto", label: "Auto" },
-                      { value: "google", label: "Google Meet" },
-                      { value: "microsoft", label: "Microsoft Teams" },
+                      { value: "google_meet", label: "Google Meet" },
+                      { value: "teams", label: "Microsoft Teams" },
                     ] as const
                   ).map(({ value, label }) => (
                     <label

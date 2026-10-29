@@ -191,7 +191,7 @@ export async function createPublicMeeting(input: {
   /** Visitor's preferred meeting link provider. Only sent when the host has
    * both Google and Microsoft connected and the visitor explicitly picks one.
    * Omit (or pass undefined) to use the host's default ("auto"). */
-  meetingLinkKind?: "google" | "microsoft";
+  meetingLinkKind?: "google_meet" | "teams";
 }): Promise<PublicBookingResult> {
   const payload: Record<string, unknown> = {
     visitor_name: input.visitorName,
