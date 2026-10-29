@@ -375,7 +375,20 @@ class WriteCalendarDefault(models.Model):
 
     @property
     def provider(self) -> str:
-        """Back-compat: Return ``"google"`` or ``"microsoft"`` for the primary account."""
+        """Back-compat: reports the *primary* active provider (Google > Microsoft).
+
+        Returns ``"google"`` when ``google_account_id`` is non-null, otherwise
+        ``"microsoft"``.
+
+        **Warning — ambiguous when both providers are active.**  When both
+        ``google_account_id`` and ``microsoft_account_id`` are non-null this
+        property silently returns ``"google"`` with no indication that a
+        Microsoft default also exists.  Code that needs to route a new event to
+        a *specific* provider MUST call
+        ``apps.scheduling.services._pick_write_provider(user, provider=...)``
+        instead (delivered in Task A2).  This property exists only for
+        back-compat with single-provider callers.
+        """
         return "google" if self.google_account_id is not None else "microsoft"
 
     @property

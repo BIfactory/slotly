@@ -123,3 +123,24 @@ class WriteDefaultPerProviderTests(TestCase):
         m = _make_microsoft(self.alice)
         wd = WriteCalendarDefault.objects.create(user=self.alice, microsoft_account=m)
         self.assertIsNotNone(wd.pk)
+
+    def test_provider_property_returns_google_when_both_set(self):
+        """Back-compat: .provider returns "google" even when both FKs are set.
+
+        When a user has defaults for both Google and Microsoft,
+        WriteCalendarDefault.provider is ambiguous by design — it always
+        reports the Google-precedence value.  This test documents that
+        intentional (if lossy) behavior so that future refactors know not to
+        change the return value without also auditing every back-compat caller.
+
+        Callers that need to route to a specific provider MUST use
+        apps.scheduling.services._pick_write_provider(user, provider=...)
+        (delivered in Task A2) instead of this property.
+        """
+        g = _make_google(self.alice, email="alice+g@gmail.com")
+        m = _make_microsoft(self.alice, email="alice+m@outlook.com")
+        wd = WriteCalendarDefault.objects.create(
+            user=self.alice, google_account=g, microsoft_account=m,
+        )
+        # Both providers are active — .provider must still return "google".
+        self.assertEqual(wd.provider, "google")
