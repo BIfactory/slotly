@@ -219,8 +219,12 @@ function CalendarsPageInner() {
   const handlePatchWriteCalendar = useCallback(
     async (id: string, writeCalendarId: string) => {
       try {
-        const updated = await patchAccountWriteCalendar(id, writeCalendarId);
-        setAccounts((prev) => prev.map((a) => (a.id === id ? updated : a)));
+        const update = await patchAccountWriteCalendar(id, writeCalendarId);
+        setAccounts((prev) =>
+          prev.map((a) =>
+            a.id === id ? { ...a, write_calendar_id: update.write_calendar_id } : a,
+          ),
+        );
       } catch (err) {
         setAccountsError(
           err instanceof Error ? err.message : "Couldn't save calendar choice.",
