@@ -81,6 +81,13 @@ class User(AbstractUser):
     buffer_before_min = models.PositiveSmallIntegerField(default=0)
     buffer_after_min = models.PositiveSmallIntegerField(default=0)
 
+    # Per-provider booking toggles (PRD §booking-controls). Let the user
+    # disable new bookings from a specific OAuth provider independently of
+    # whether that OAuth account is still connected. Defaults to True so
+    # existing users keep their current behaviour unchanged.
+    accepts_google_bookings = models.BooleanField(default=True)
+    accepts_microsoft_bookings = models.BooleanField(default=True)
+
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
