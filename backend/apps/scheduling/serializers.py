@@ -22,6 +22,38 @@ from __future__ import annotations
 from rest_framework import serializers
 
 
+class UserLocationSerializer(serializers.Serializer):
+    """Read/write serializer for UserLocation.
+
+    Used by GET (list), POST (create), and PATCH (update) on /api/me/locations.
+    ``is_default`` is optional on write — omitting it means "no change" on PATCH,
+    and defaults to False on create.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    name = serializers.CharField(max_length=100)
+    address = serializers.CharField(max_length=400)
+    is_default = serializers.BooleanField(required=False, default=False)
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+
+    def validate_name(self, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("This field may not be blank.")
+        if len(value) > 100:
+            raise serializers.ValidationError("Ensure this field has no more than 100 characters.")
+        return value
+
+    def validate_address(self, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("This field may not be blank.")
+        if len(value) > 400:
+            raise serializers.ValidationError("Ensure this field has no more than 400 characters.")
+        return value
+
+
 class CalendarAccountSerializer(serializers.Serializer):
     """Read-only serializer for a single linked OAuth account.
 

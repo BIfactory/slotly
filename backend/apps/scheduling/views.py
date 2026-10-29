@@ -2508,3 +2508,155 @@ def _client_ip(request) -> str:
     return (request.META.get("REMOTE_ADDR") or "unknown")[:64]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# G2 — /api/me/locations CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LOCATION_CAP = 20
+
+
+def _serialize_location(loc) -> dict:
+    from .serializers import UserLocationSerializer
+    return UserLocationSerializer(loc).data
+
+
+def _unset_default_siblings(user, exclude_pk: int | None = None) -> None:
+    """Unset is_default on all of the user's locations except the given pk.
+    Must be called inside an atomic block."""
+    from .models import UserLocation
+    qs = UserLocation.objects.filter(user=user, is_default=True)
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    qs.update(is_default=False)
+
+
+class UserLocationListCreateView(APIView):
+    """GET  /api/me/locations — list caller's locations.
+    POST /api/me/locations — create a new location."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        from .models import UserLocation
+        locs = (
+            UserLocation.objects
+            .filter(user=request.user)
+            .order_by("-is_default", "name")
+        )
+        return Response([_serialize_location(loc) for loc in locs])
+
+    def post(self, request: Request) -> Response:
+        from .models import UserLocation
+        from .serializers import UserLocationSerializer
+
+        # 20-cap check.
+        current_count = UserLocation.objects.filter(user=request.user).count()
+        if current_count >= _LOCATION_CAP:
+            return Response(
+                {"detail": "You can have at most 20 locations."},
+                status=400,
+            )
+
+        ser = UserLocationSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=400)
+
+        name = ser.validated_data["name"]
+        address = ser.validated_data["address"]
+        is_default = ser.validated_data.get("is_default", False)
+
+        # Duplicate-name check (return field-level DRF-style error).
+        if UserLocation.objects.filter(user=request.user, name=name).exists():
+            return Response(
+                {"name": ["A location with this name already exists."]},
+                status=400,
+            )
+
+        with transaction.atomic():
+            if is_default:
+                _unset_default_siblings(request.user, exclude_pk=None)
+            loc = UserLocation.objects.create(
+                user=request.user,
+                name=name,
+                address=address,
+                is_default=is_default,
+            )
+
+        return Response(_serialize_location(loc), status=201)
+
+
+class UserLocationDetailView(APIView):
+    """PATCH  /api/me/locations/<pk> — partial-update a location.
+    DELETE /api/me/locations/<pk> — remove it."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_location(self, request: Request, pk: int):
+        from .models import UserLocation
+        try:
+            return UserLocation.objects.get(pk=pk, user=request.user)
+        except UserLocation.DoesNotExist:
+            return None
+
+    def patch(self, request: Request, pk: int) -> Response:
+        from .models import UserLocation
+        from .serializers import UserLocationSerializer
+
+        loc = self._get_location(request, pk)
+        if loc is None:
+            return Response({"detail": "Not found."}, status=404)
+
+        # Build a partial serializer — only validate fields that were sent.
+        ser = UserLocationSerializer(loc, data=request.data, partial=True)
+        if not ser.is_valid():
+            return Response(ser.errors, status=400)
+
+        vd = ser.validated_data
+
+        # Duplicate-name check: only when name is being changed to a new value.
+        if "name" in vd and vd["name"] != loc.name:
+            if UserLocation.objects.filter(user=request.user, name=vd["name"]).exists():
+                return Response(
+                    {"name": ["A location with this name already exists."]},
+                    status=400,
+                )
+
+        with transaction.atomic():
+            if vd.get("is_default") is True:
+                _unset_default_siblings(request.user, exclude_pk=loc.pk)
+
+            for field, value in vd.items():
+                setattr(loc, field, value)
+            loc.save()
+
+        return Response(_serialize_location(loc))
+
+    def delete(self, request: Request, pk: int) -> Response:
+        from .models import UserLocation
+        deleted, _ = UserLocation.objects.filter(pk=pk, user=request.user).delete()
+        if deleted == 0:
+            return Response({"detail": "Not found."}, status=404)
+        return Response(status=204)
+
+
+class UserLocationSetDefaultView(APIView):
+    """POST /api/me/locations/<pk>/set-default — mark this location as the default,
+    atomically clearing is_default on all siblings."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request, pk: int) -> Response:
+        from .models import UserLocation
+        try:
+            loc = UserLocation.objects.get(pk=pk, user=request.user)
+        except UserLocation.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        with transaction.atomic():
+            _unset_default_siblings(request.user, exclude_pk=loc.pk)
+            loc.is_default = True
+            loc.save(update_fields=["is_default", "updated_at"])
+
+        return Response(_serialize_location(loc))
+
+
