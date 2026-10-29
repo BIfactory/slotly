@@ -1,6 +1,6 @@
 """Tests for OAuth-driven busy intervals (OAuthBusyWindow model + sync tasks + search integration)."""
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, call, patch, PropertyMock
 
 from django.test import TestCase
 
@@ -705,3 +705,50 @@ class SyncMetricsLoggingTests(TestCase):
         self.assertIn("event=oauth_busy_sync", combined)
         self.assertIn("provider=microsoft", combined)
         self.assertIn("error=", combined)
+
+
+# ---------------------------------------------------------------------------
+# _assert_tz_aware guard — OAuthBusyWindow row path
+# ---------------------------------------------------------------------------
+
+class AssertTzAwareOAuthBusyWindowTests(TestCase):
+    """busy_intervals_for_users raises ValueError when OAuthBusyWindow.starts_at
+    is tz-naive.  The DB schema requires tz-aware values, but the guard must
+    catch any source (test fixture, migration, direct ORM write) that strips
+    timezone info before the intervals reach the merge step.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="tz_guard@x.com", password="x" * 12)
+
+    def test_naive_starts_at_raises_value_error(self):
+        """_assert_tz_aware must raise ValueError containing 'OAuthBusyWindow.starts_at'
+        when the DB returns a tz-naive datetime for that column.
+        """
+        from apps.search.queries import busy_intervals_for_users
+
+        now = datetime.now(timezone.utc)
+        window_start = now
+        window_end = now + timedelta(hours=4)
+
+        # Fake a DB row where starts_at has no tzinfo (simulates a source stripping tz).
+        naive_start = datetime(2026, 10, 29, 10, 0, 0)  # no tzinfo
+        aware_end = now + timedelta(hours=1)
+
+        fake_rows = [{"user_id": self.user.pk, "starts_at": naive_start, "ends_at": aware_end}]
+
+        # Patch OAuthBusyWindow.objects.filter(...).values(...) to return our fake rows.
+        with patch(
+            "apps.search.queries.OAuthBusyWindow.objects"
+        ) as mock_manager:
+            # CalendarEvent and Unavailability must return empty so we reach OAuthBusyWindow.
+            with patch("apps.search.queries.CalendarEvent.objects") as mock_cal, \
+                 patch("apps.search.queries.Unavailability.objects") as mock_unavail:
+                mock_cal.filter.return_value.exclude.return_value.values.return_value = []
+                mock_unavail.filter.return_value.values.return_value = []
+                mock_manager.filter.return_value.values.return_value = fake_rows
+
+                with self.assertRaises(ValueError) as ctx:
+                    busy_intervals_for_users([self.user.pk], window_start, window_end)
+
+        self.assertIn("OAuthBusyWindow.starts_at", str(ctx.exception))
