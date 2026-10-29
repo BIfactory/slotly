@@ -567,151 +567,26 @@ function TokenTable({
     );
   }
 
+  // One list layout across all breakpoints — a horizontally squeezed table
+  // (7 cols: Name / Prefix / Scopes / Created / Last used / Status / Actions)
+  // doesn't survive the app's standard max-w-3xl container. Cards stack
+  // every field vertically so nothing clips and every action stays reachable.
   return (
-    <>
-      {/* ── Desktop (≥md): 7-column table ── */}
-      <div className="hidden overflow-x-auto rounded-xl border border-zinc-200 bg-white md:block dark:border-zinc-800 dark:bg-zinc-900">
-        <table className="w-full text-sm">
-          <thead className="border-b border-zinc-200 bg-zinc-50/80 dark:border-zinc-800 dark:bg-zinc-900/60">
-            <tr>
-              {["Name", "Prefix", "Scopes", "Created", "Last used", "Status", "Actions"].map(
-                (h) => (
-                  <th
-                    key={h}
-                    className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400"
-                  >
-                    {h}
-                  </th>
-                ),
-              )}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-            {tokens.map((t) => (
-              <TokenRow
-                key={t.id}
-                token={t}
-                onRevoke={onRevoke}
-                onPurge={onPurge}
-                onViewCalls={onViewCalls}
-              />
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* ── Mobile (<md): stacked card list. 7 columns don't fit on narrow
-          viewports — the Actions column (View calls, Revoke) was clipped
-          off-screen so users couldn't revoke tokens. Same pattern as
-          /settings/calendars. ── */}
-      <div className="space-y-2 md:hidden">
-        {tokens.map((t) => (
-          <TokenCard
-            key={t.id}
-            token={t}
-            onRevoke={onRevoke}
-            onPurge={onPurge}
-            onViewCalls={onViewCalls}
-          />
-        ))}
-      </div>
-    </>
+    <div className="space-y-3">
+      {tokens.map((t) => (
+        <TokenCard
+          key={t.id}
+          token={t}
+          onRevoke={onRevoke}
+          onPurge={onPurge}
+          onViewCalls={onViewCalls}
+        />
+      ))}
+    </div>
   );
 }
 
 const WRITE_SCOPES_SET = new Set<string>(["create_booking", "write_event"]);
-
-function TokenRow({
-  token,
-  onRevoke,
-  onPurge,
-  onViewCalls,
-}: {
-  token: McpToken;
-  onRevoke: (t: McpToken) => void;
-  onPurge: (t: McpToken) => void;
-  onViewCalls: (t: McpToken) => void;
-}) {
-  const created = new Date(token.created_at).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  const lastUsed = token.last_used_at ? relativeTime(token.last_used_at) : "Never";
-  const hasWriteScope = token.scopes.some((s) => WRITE_SCOPES_SET.has(s));
-
-  return (
-    <tr className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
-      <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">
-        <span>{token.name}</span>
-        {hasWriteScope && (
-          <span className="ml-2 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-            Write
-          </span>
-        )}
-      </td>
-      <td className="px-4 py-3 font-mono text-xs text-zinc-600 dark:text-zinc-300">
-        {token.prefix}&hellip;
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex flex-wrap gap-1">
-          {token.scopes.map((s) => (
-            <span
-              key={s}
-              className={
-                WRITE_SCOPES_SET.has(s)
-                  ? "rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
-                  : "rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
-              }
-            >
-              {s}
-            </span>
-          ))}
-        </div>
-      </td>
-      <td className="px-4 py-3 text-zinc-600 dark:text-zinc-300">{created}</td>
-      <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{lastUsed}</td>
-      <td className="px-4 py-3">
-        <span
-          className={
-            token.is_active
-              ? "rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-              : "rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
-          }
-        >
-          {token.is_active ? "Active" : "Revoked"}
-        </span>
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex gap-2">
-          <button
-            onClick={() => onViewCalls(token)}
-            className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
-          >
-            View calls
-          </button>
-          {token.is_active ? (
-            <button
-              onClick={() => onRevoke(token)}
-              className="rounded-md border border-red-200 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
-            >
-              Revoke
-            </button>
-          ) : (
-            <button
-              onClick={() => onPurge(token)}
-              className="rounded-md border border-red-300 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-950/70"
-            >
-              Delete
-            </button>
-          )}
-        </div>
-      </td>
-    </tr>
-  );
-}
 
 function TokenCard({
   token,
