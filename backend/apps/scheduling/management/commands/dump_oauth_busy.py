@@ -2,6 +2,7 @@
 
 Usage:
     python manage.py dump_oauth_busy --email hulin@bifactory.cz --date 2026-10-29
+    python manage.py dump_oauth_busy --all --date 2026-10-29
 
 Not for production cron. Short-lived diagnostic command.
 """
@@ -23,15 +24,31 @@ class Command(BaseCommand):
     help = "Dump OAuthBusyWindow rows for a user + date (UTC + Prague view)."
 
     def add_arguments(self, parser):
-        parser.add_argument("--email", required=True)
+        group = parser.add_mutually_exclusive_group(required=True)
+        group.add_argument("--email", help="Dump for a single user by email.")
+        group.add_argument(
+            "--all", action="store_true", dest="all_users",
+            help="Dump for every user, ordered by email.",
+        )
         parser.add_argument("--date", required=True, help="YYYY-MM-DD (local date)")
 
-    def handle(self, *args, email, date, **options):
-        user = User.objects.filter(email=email).first()
-        if user is None:
-            self.stdout.write(f"user {email!r} not found")
-            return
+    def handle(self, *args, **options):
+        date = options["date"]
+        if options["all_users"]:
+            users = User.objects.order_by("email")
+            for user in users:
+                self.stdout.write(f"=== {user.email} ===")
+                self._dump_user(user, date)
+                self.stdout.write("")
+        else:
+            email = options["email"]
+            user = User.objects.filter(email=email).first()
+            if user is None:
+                self.stdout.write(f"user {email!r} not found")
+                return
+            self._dump_user(user, date)
 
+    def _dump_user(self, user, date: str) -> None:
         day = datetime.strptime(date, "%Y-%m-%d").date()
         prague = ZoneInfo("Europe/Prague")
         start_local = datetime.combine(day, time.min, tzinfo=prague)

@@ -16,6 +16,7 @@ from rest_framework.views import APIView
 from apps.availability.models import Unavailability
 from apps.calendars.models import Calendar, CalendarEvent
 from apps.notifications.dispatch import notify
+from apps.search.queries import busy_intervals_for_users as _busy_intervals_for_users
 from apps.notifications.models import Notification
 from apps.teams.models import Membership, Team
 
@@ -74,7 +75,6 @@ class MyAvailabilityView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request) -> Response:
-        from django.db.models import Q as _Q
         user = request.user
         from_param = request.query_params.get("from")
         to_param = request.query_params.get("to")
@@ -95,21 +95,9 @@ class MyAvailabilityView(APIView):
         if (window_end - window_start) > timedelta(days=84):
             window_end = window_start + timedelta(days=84)
 
-        busy: list[tuple] = []
-        for ev in CalendarEvent.objects.filter(
-            _Q(transp=CalendarEvent.Transparency.OPAQUE) | _Q(is_all_day=True),
-            calendar__owner_id=user.pk,
-            calendar__include_in_busy=True,
-            dtstart__lt=window_end,
-            dtend__gt=window_start,
-        ).exclude(status=CalendarEvent.Status.CANCELLED).values("dtstart", "dtend"):
-            busy.append((ev["dtstart"], ev["dtend"]))
-        for u in Unavailability.objects.filter(
-            user_id=user.pk,
-            starts_at__lt=window_end,
-            ends_at__gt=window_start,
-        ).values("starts_at", "ends_at"):
-            busy.append((u["starts_at"], u["ends_at"]))
+        # Union of CalendarEvent + OAuthBusyWindow + Unavailability via shared helper.
+        # This fixes bug #1/#2: OAuthBusyWindow rows were silently dropped before.
+        busy = _busy_intervals_for_users([user.pk], window_start, window_end).get(user.pk, [])
         busy = _inflate_busy(busy, user.buffer_before_min, user.buffer_after_min)
 
         return Response({
@@ -143,7 +131,6 @@ class PeerAvailabilityView(APIView):
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo as _ZoneInfo
         from django.conf import settings as _settings
-        from django.db.models import Q as _Q
 
         from apps.search.engine import compute_slots as _compute_slots
         from apps.teams.models import Membership as _Membership, Team as _Team
@@ -208,25 +195,12 @@ class PeerAvailabilityView(APIView):
             peer.pk: peer.working_hours,
         }
 
-        events = CalendarEvent.objects.filter(
-            _Q(transp=CalendarEvent.Transparency.OPAQUE) | _Q(is_all_day=True),
-            calendar__owner_id__in=user_ids,
-            calendar__include_in_busy=True,
-            dtstart__lt=window_end,
-            dtend__gt=window_start,
-        ).exclude(
-            status=CalendarEvent.Status.CANCELLED,
-        ).values("calendar__owner_id", "dtstart", "dtend")
-
-        busy_per_user: dict[int, list[tuple]] = {uid: [] for uid in user_ids}
-        for ev in events:
-            busy_per_user[ev["calendar__owner_id"]].append((ev["dtstart"], ev["dtend"]))
-        for u in Unavailability.objects.filter(
-            user_id__in=user_ids,
-            starts_at__lt=window_end,
-            ends_at__gt=window_start,
-        ).values("user_id", "starts_at", "ends_at"):
-            busy_per_user[u["user_id"]].append((u["starts_at"], u["ends_at"]))
+        # Union of CalendarEvent + OAuthBusyWindow + Unavailability via shared helper.
+        # This fixes bug #2: OAuthBusyWindow rows were silently dropped before.
+        busy_per_user = _busy_intervals_for_users(user_ids, window_start, window_end)
+        # Ensure both keys present even if no busy rows exist.
+        for uid in user_ids:
+            busy_per_user.setdefault(uid, [])
         # Apply each user's own buffer so back-to-back meetings don't leak
         # into the intersection either.
         busy_per_user[request.user.pk] = _inflate_busy(
@@ -296,8 +270,6 @@ class TeammateAvailabilityView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request, user_id: int) -> Response:
-        from django.db.models import Q as _Q
-
         peer = get_object_or_404(User, pk=user_id)
 
         shared = Team.objects.filter(memberships__user=request.user).filter(
@@ -335,21 +307,9 @@ class TeammateAvailabilityView(APIView):
         if (window_end - window_start) > timedelta(days=84):
             window_end = window_start + timedelta(days=84)
 
-        busy: list[tuple] = []
-        for ev in CalendarEvent.objects.filter(
-            _Q(transp=CalendarEvent.Transparency.OPAQUE) | _Q(is_all_day=True),
-            calendar__owner_id=peer.pk,
-            calendar__include_in_busy=True,
-            dtstart__lt=window_end,
-            dtend__gt=window_start,
-        ).exclude(status=CalendarEvent.Status.CANCELLED).values("dtstart", "dtend"):
-            busy.append((ev["dtstart"], ev["dtend"]))
-        for u in Unavailability.objects.filter(
-            user_id=peer.pk,
-            starts_at__lt=window_end,
-            ends_at__gt=window_start,
-        ).values("starts_at", "ends_at"):
-            busy.append((u["starts_at"], u["ends_at"]))
+        # Union of CalendarEvent + OAuthBusyWindow + Unavailability via shared helper.
+        # TeammateAvailabilityView had the same CalendarEvent-only bug as MyAvailabilityView.
+        busy = _busy_intervals_for_users([peer.pk], window_start, window_end).get(peer.pk, [])
         busy = _inflate_busy(busy, peer.buffer_before_min, peer.buffer_after_min)
 
         return Response({
@@ -403,24 +363,10 @@ class PublicProfileView(APIView):
         if (window_end - window_start) > timedelta(days=84):
             window_end = window_start + timedelta(days=84)
 
-        # Aggregate busy intervals from calendars + manual unavailability blocks.
-        # All-day events count as busy regardless of TRANSP — see SearchView.
-        from django.db.models import Q as _Q
-        busy: list[tuple] = []
-        for ev in CalendarEvent.objects.filter(
-            _Q(transp=CalendarEvent.Transparency.OPAQUE) | _Q(is_all_day=True),
-            calendar__owner_id=user.pk,
-            calendar__include_in_busy=True,
-            dtstart__lt=window_end,
-            dtend__gt=window_start,
-        ).exclude(status=CalendarEvent.Status.CANCELLED).values("dtstart", "dtend"):
-            busy.append((ev["dtstart"], ev["dtend"]))
-        for u in Unavailability.objects.filter(
-            user_id=user.pk,
-            starts_at__lt=window_end,
-            ends_at__gt=window_start,
-        ).values("starts_at", "ends_at"):
-            busy.append((u["starts_at"], u["ends_at"]))
+        # Union of CalendarEvent + OAuthBusyWindow + Unavailability via shared helper.
+        # Previously only CalendarEvent + Unavailability were read here, so
+        # OAuth-sourced busy windows were invisible on the public /u/<token> page.
+        busy = _busy_intervals_for_users([user.pk], window_start, window_end).get(user.pk, [])
         busy = _inflate_busy(busy, user.buffer_before_min, user.buffer_after_min)
 
         profile = PublicProfileSerializer(user, context={"request": request}).data

@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
-from django.db.models import Q
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
@@ -14,13 +13,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 
-from apps.availability.models import Unavailability
-from apps.calendars.models import CalendarEvent
-from apps.scheduling.models import OAuthBusyWindow
 from apps.teams.models import Membership, Team
 from apps.teams.permissions import is_member
 
 from .engine import compute_slots
+from .queries import busy_intervals_for_users
 from .models import RECENT_SEARCH_LIMIT, RecentSearch, SavedSearch
 from .serializers import (
     CheckTimeInputSerializer,
@@ -70,42 +67,19 @@ class SearchView(APIView):
         users = User.objects.filter(pk__in=team_member_ids)
         working_hours_per_user = {u.pk: u.working_hours for u in users}
 
-        # All-day events (vacation, sick day, "off") block the day regardless
-        # of TRANSP — most calendar apps mark them transparent by default but
-        # the human intent is "I'm not available". Time-bound events still
-        # honor TRANSP so that "Lunch" marked free doesn't block.
-        events = CalendarEvent.objects.filter(
-            Q(transp=CalendarEvent.Transparency.OPAQUE) | Q(is_all_day=True),
-            calendar__owner_id__in=team_member_ids,
-            calendar__include_in_busy=True,
-            dtstart__lt=data["window_end"],
-            dtend__gt=data["window_start"],
-        ).exclude(
-            status=CalendarEvent.Status.CANCELLED,
-        ).values("calendar__owner_id", "dtstart", "dtend")
-
-        busy_per_user: dict[int, list[tuple]] = {uid: [] for uid in team_member_ids}
-        for ev in events:
-            busy_per_user[ev["calendar__owner_id"]].append((ev["dtstart"], ev["dtend"]))
-
-        # Manual unavailability blocks (PRD M12) — same opaque-busy semantics.
-        for u in Unavailability.objects.filter(
-            user_id__in=team_member_ids,
-            starts_at__lt=data["window_end"],
-            ends_at__gt=data["window_start"],
-        ).values("user_id", "starts_at", "ends_at"):
-            busy_per_user[u["user_id"]].append((u["starts_at"], u["ends_at"]))
-
-        # OAuth busy intervals — union with ICS pipeline (not a replacement).
-        # Privacy: OAuthBusyWindow stores only (starts_at, ends_at), no event details.
-        # Semantic note: all-day transparent events are NOT included here (Google
-        # freebusy semantics); ICS pipeline still treats them as busy. See docs/oauth-busy.md.
-        for ob in OAuthBusyWindow.objects.filter(
-            user_id__in=team_member_ids,
-            starts_at__lt=data["window_end"],
-            ends_at__gt=data["window_start"],
-        ).values("user_id", "starts_at", "ends_at"):
-            busy_per_user[ob["user_id"]].append((ob["starts_at"], ob["ends_at"]))
+        # Union of CalendarEvent + OAuthBusyWindow + Unavailability via shared helper.
+        # All-day events (vacation, sick day, "off") block the day regardless of TRANSP.
+        # OAuth busy intervals (Google freebusy / MS Graph) are included alongside the
+        # ICS pipeline — not a replacement. Privacy: OAuthBusyWindow stores only
+        # (starts_at, ends_at), no event details. See docs/oauth-busy.md.
+        busy_per_user = busy_intervals_for_users(
+            team_member_ids,
+            data["window_start"],
+            data["window_end"],
+        )
+        # Ensure every requested user appears in the dict even with no busy rows.
+        for uid in team_member_ids:
+            busy_per_user.setdefault(uid, [])
 
         slots, truncated = compute_slots(
             working_hours_per_user=working_hours_per_user,
@@ -187,41 +161,17 @@ class CheckTimeView(APIView):
 
         win_start, win_end = data["start"], data["end"]
 
-        # Same TRANSP + all-day semantics as /api/search.
-        events = CalendarEvent.objects.filter(
-            Q(transp=CalendarEvent.Transparency.OPAQUE) | Q(is_all_day=True),
-            calendar__owner_id__in=team_member_ids,
-            calendar__include_in_busy=True,
-            dtstart__lt=win_end,
-            dtend__gt=win_start,
-        ).exclude(
-            status=CalendarEvent.Status.CANCELLED,
-        ).values("calendar__owner_id", "dtstart", "dtend")
+        # Union of CalendarEvent + OAuthBusyWindow + Unavailability via shared helper.
+        # Same TRANSP + all-day semantics as /api/search. Intervals are clipped to
+        # [win_start, win_end) below so the conflicts list only shows overlap.
+        busy_raw = busy_intervals_for_users(team_member_ids, win_start, win_end)
 
         conflicts_per_user: dict[int, list[tuple]] = {uid: [] for uid in team_member_ids}
-        for ev in events:
-            conflicts_per_user[ev["calendar__owner_id"]].append(
-                (max(ev["dtstart"], win_start), min(ev["dtend"], win_end)),
-            )
-
-        for u in Unavailability.objects.filter(
-            user_id__in=team_member_ids,
-            starts_at__lt=win_end,
-            ends_at__gt=win_start,
-        ).values("user_id", "starts_at", "ends_at"):
-            conflicts_per_user[u["user_id"]].append(
-                (max(u["starts_at"], win_start), min(u["ends_at"], win_end)),
-            )
-
-        # OAuth busy intervals — union with ICS pipeline (not a replacement).
-        for ob in OAuthBusyWindow.objects.filter(
-            user_id__in=team_member_ids,
-            starts_at__lt=win_end,
-            ends_at__gt=win_start,
-        ).values("user_id", "starts_at", "ends_at"):
-            conflicts_per_user[ob["user_id"]].append(
-                (max(ob["starts_at"], win_start), min(ob["ends_at"], win_end)),
-            )
+        for uid in team_member_ids:
+            for s, e in busy_raw.get(uid, []):
+                conflicts_per_user[uid].append(
+                    (max(s, win_start), min(e, win_end)),
+                )
 
         users = User.objects.filter(pk__in=team_member_ids).order_by(
             "first_name", "last_name", "email",
