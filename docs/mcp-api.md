@@ -3,7 +3,9 @@
 Slotly exposes a [Model Context Protocol](https://spec.modelcontextprotocol.io/specification/2024-11-05/) (MCP) endpoint that lets AI assistants and automation tools query your scheduling data on your behalf.
 
 **Spec version:** `2024-11-05`  
-**Base URL:** `https://<your-domain>/mcp/v1/`
+**Base URL (production):** `https://api.slotly.team/mcp/v1`
+
+> **Tip:** The exact URL is also shown in **Settings → API tokens** so you can copy it to your MCP client (Personal Hub, Claude Desktop, etc.) directly. There is no `.well-known/mcp` discovery endpoint — paste the full URL from the Settings page.
 
 ---
 
