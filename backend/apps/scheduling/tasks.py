@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from datetime import timedelta
 
 from celery import shared_task
@@ -81,12 +82,19 @@ def _sync_google(account_pk: int) -> dict:
     if account is None:
         return {"skipped": True, "reason": "account not found"}
 
+    t_start = time.monotonic()
     try:
         calendars = list_all_calendars(account)
         calendar_ids = [c["id"] for c in calendars]
         if not calendar_ids:
             # Account connected but no calendars visible — clear old data.
             OAuthBusyWindow.objects.filter(google_account=account).delete()
+            duration_ms = int((time.monotonic() - t_start) * 1000)
+            logger.info(
+                "event=oauth_busy_sync provider=google account_id=%s"
+                " calendars=0 windows_written=0 duration_ms=%s note=no_calendars",
+                account_pk, duration_ms,
+            )
             return {"account_id": account_pk, "written": 0, "note": "no calendars"}
 
         # Google allows 50 items per freebusy request — batch if needed.
@@ -97,8 +105,11 @@ def _sync_google(account_pk: int) -> dict:
             busy.extend(fetch_freebusy(account, batch, _window_start(), _window_end()))
 
     except (GoogleOAuthError, GoogleApiError) as exc:
+        duration_ms = int((time.monotonic() - t_start) * 1000)
         logger.warning(
-            "sync_one_oauth_account google pk=%s failed: %s", account_pk, exc
+            "event=oauth_busy_sync provider=google account_id=%s"
+            " calendars=0 windows_written=0 duration_ms=%s error=%r",
+            account_pk, duration_ms, str(exc)[:200],
         )
         return {"error": str(exc)[:200]}
 
@@ -120,6 +131,12 @@ def _sync_google(account_pk: int) -> dict:
             for (cid, s, e) in busy
         ])
 
+    duration_ms = int((time.monotonic() - t_start) * 1000)
+    logger.info(
+        "event=oauth_busy_sync provider=google account_id=%s"
+        " calendars=%s windows_written=%s duration_ms=%s",
+        account_pk, len(calendar_ids), len(busy), duration_ms,
+    )
     return {"account_id": account_pk, "written": len(busy)}
 
 
@@ -135,11 +152,18 @@ def _sync_microsoft(account_pk: int) -> dict:
     if account is None:
         return {"skipped": True, "reason": "account not found"}
 
+    t_start = time.monotonic()
     try:
         calendars = list_all_calendars(account)
         calendar_ids = [c["id"] for c in calendars]
         if not calendar_ids:
             OAuthBusyWindow.objects.filter(microsoft_account=account).delete()
+            duration_ms = int((time.monotonic() - t_start) * 1000)
+            logger.info(
+                "event=oauth_busy_sync provider=microsoft account_id=%s"
+                " calendars=0 windows_written=0 duration_ms=%s note=no_calendars",
+                account_pk, duration_ms,
+            )
             return {"account_id": account_pk, "written": 0, "note": "no calendars"}
 
         busy: list[tuple[str, object, object]] = []
@@ -150,8 +174,11 @@ def _sync_microsoft(account_pk: int) -> dict:
             busy.extend(fetch_freebusy(account, batch, _window_start(), _window_end()))
 
     except (MicrosoftOAuthError, MicrosoftApiError) as exc:
+        duration_ms = int((time.monotonic() - t_start) * 1000)
         logger.warning(
-            "sync_one_oauth_account microsoft pk=%s failed: %s", account_pk, exc
+            "event=oauth_busy_sync provider=microsoft account_id=%s"
+            " calendars=0 windows_written=0 duration_ms=%s error=%r",
+            account_pk, duration_ms, str(exc)[:200],
         )
         return {"error": str(exc)[:200]}
 
@@ -173,6 +200,12 @@ def _sync_microsoft(account_pk: int) -> dict:
             for (cid, s, e) in busy
         ])
 
+    duration_ms = int((time.monotonic() - t_start) * 1000)
+    logger.info(
+        "event=oauth_busy_sync provider=microsoft account_id=%s"
+        " calendars=%s windows_written=%s duration_ms=%s",
+        account_pk, len(calendar_ids), len(busy), duration_ms,
+    )
     return {"account_id": account_pk, "written": len(busy)}
 
 

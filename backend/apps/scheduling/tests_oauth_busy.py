@@ -540,3 +540,168 @@ class HostAvailabilityForRescheduleOAuthBusyTests(TestCase):
         """Without OAuthBusyWindow rows the reschedule helper must return an empty busy list."""
         result = self._call()
         self.assertEqual(result["busy"], [])
+
+
+# ---------------------------------------------------------------------------
+# C4: dump_oauth_busy --all  +  structured sync metrics logging
+# ---------------------------------------------------------------------------
+
+class DumpOAuthBusyAllFlagTests(TestCase):
+    """dump_oauth_busy --all iterates every user in email order, printing headers."""
+
+    def setUp(self):
+        self.alice = User.objects.create_user(email="alice@x.com", password="x" * 12)
+        self.bob = User.objects.create_user(email="bob@x.com", password="x" * 12)
+
+    def test_all_flag_prints_both_user_headers(self):
+        from io import StringIO
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("dump_oauth_busy", "--all", "--date", "2026-10-29", stdout=out)
+        output = out.getvalue()
+
+        self.assertIn("=== alice@x.com ===", output)
+        self.assertIn("=== bob@x.com ===", output)
+
+    def test_all_flag_preserves_email_order(self):
+        """Users must appear in ascending email order."""
+        from io import StringIO
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("dump_oauth_busy", "--all", "--date", "2026-10-29", stdout=out)
+        output = out.getvalue()
+
+        alice_pos = output.index("=== alice@x.com ===")
+        bob_pos = output.index("=== bob@x.com ===")
+        self.assertLess(alice_pos, bob_pos)
+
+    def test_email_flag_still_works(self):
+        """Single-user --email behavior is byte-identical to before."""
+        from io import StringIO
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("dump_oauth_busy", "--email", "alice@x.com", "--date", "2026-10-29", stdout=out)
+        output = out.getvalue()
+
+        self.assertIn("alice@x.com", output)
+        self.assertNotIn("=== alice@x.com ===", output)
+        self.assertNotIn("bob@x.com", output)
+
+    def test_all_and_email_are_mutually_exclusive(self):
+        """Passing both --all and --email must raise CommandError (argparse mutual exclusion)."""
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command(
+                "dump_oauth_busy",
+                "--all", "--email", "alice@x.com", "--date", "2026-10-29",
+                stdout=StringIO(), stderr=StringIO(),
+            )
+
+    def test_neither_flag_raises_command_error(self):
+        """Omitting both --all and --email must raise CommandError (argparse required group)."""
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command(
+                "dump_oauth_busy", "--date", "2026-10-29",
+                stdout=StringIO(), stderr=StringIO(),
+            )
+
+
+class SyncMetricsLoggingTests(TestCase):
+    """sync_one_oauth_account emits structured key=value log lines at completion."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="log@x.com", password="x" * 12)
+        self.g = GoogleAccount.objects.create(
+            user=self.user,
+            google_email="log@gmail.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        self.ms = MicrosoftAccount.objects.create(
+            user=self.user,
+            microsoft_email="log@outlook.com",
+            access_token_encrypted="x",
+            refresh_token_encrypted="x",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    @patch("apps.scheduling.google_client.fetch_freebusy")
+    def test_google_success_emits_log_line(self, mock_freebusy, mock_calendars):
+        """Successful Google sync emits event=oauth_busy_sync with required fields."""
+        import logging as _logging
+
+        mock_calendars.return_value = [{"id": "primary"}]
+        mock_freebusy.return_value = [_make_busy("primary")]
+
+        with self.assertLogs("apps.scheduling.tasks", level=_logging.INFO) as cm:
+            sync_one_oauth_account("google", self.g.pk)
+
+        combined = " ".join(cm.output)
+        self.assertIn("event=oauth_busy_sync", combined)
+        self.assertIn("provider=google", combined)
+        self.assertIn(f"account_id={self.g.pk}", combined)
+        self.assertIn("windows_written=1", combined)
+        self.assertIn("duration_ms=", combined)
+
+    @patch("apps.scheduling.google_client.list_all_calendars")
+    def test_google_auth_error_emits_log_line(self, mock_calendars):
+        """Google auth error emits event=oauth_busy_sync with error field."""
+        import logging as _logging
+        from apps.scheduling.google_client import GoogleOAuthError
+
+        mock_calendars.side_effect = GoogleOAuthError("token revoked")
+
+        with self.assertLogs("apps.scheduling.tasks", level=_logging.WARNING) as cm:
+            sync_one_oauth_account("google", self.g.pk)
+
+        combined = " ".join(cm.output)
+        self.assertIn("event=oauth_busy_sync", combined)
+        self.assertIn("provider=google", combined)
+        self.assertIn("error=", combined)
+
+    @patch("apps.scheduling.graph_client.list_all_calendars")
+    @patch("apps.scheduling.graph_client.fetch_freebusy")
+    def test_microsoft_success_emits_log_line(self, mock_freebusy, mock_calendars):
+        """Successful Microsoft sync emits event=oauth_busy_sync with required fields."""
+        import logging as _logging
+
+        mock_calendars.return_value = [{"id": "cal-1"}]
+        mock_freebusy.return_value = [_make_busy("cal-1")]
+
+        with self.assertLogs("apps.scheduling.tasks", level=_logging.INFO) as cm:
+            sync_one_oauth_account("microsoft", self.ms.pk)
+
+        combined = " ".join(cm.output)
+        self.assertIn("event=oauth_busy_sync", combined)
+        self.assertIn("provider=microsoft", combined)
+        self.assertIn(f"account_id={self.ms.pk}", combined)
+        self.assertIn("windows_written=1", combined)
+        self.assertIn("duration_ms=", combined)
+
+    @patch("apps.scheduling.graph_client.list_all_calendars")
+    def test_microsoft_auth_error_emits_log_line(self, mock_calendars):
+        """Microsoft auth error emits event=oauth_busy_sync with error field."""
+        import logging as _logging
+        from apps.scheduling.graph_client import MicrosoftOAuthError
+
+        mock_calendars.side_effect = MicrosoftOAuthError("token revoked")
+
+        with self.assertLogs("apps.scheduling.tasks", level=_logging.WARNING) as cm:
+            sync_one_oauth_account("microsoft", self.ms.pk)
+
+        combined = " ".join(cm.output)
+        self.assertIn("event=oauth_busy_sync", combined)
+        self.assertIn("provider=microsoft", combined)
+        self.assertIn("error=", combined)
