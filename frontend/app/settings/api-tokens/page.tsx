@@ -146,7 +146,7 @@ function ApiTokensPageInner() {
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <AuthedHeader email={email} />
 
-      <main className="mx-auto max-w-2xl space-y-6 px-6 py-10">
+      <main className="mx-auto max-w-5xl space-y-6 px-6 py-10">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             API tokens
@@ -497,7 +497,7 @@ function TokenTable({
   return (
     <>
       {/* ── Desktop (≥md): 7-column table ── */}
-      <div className="hidden overflow-hidden rounded-xl border border-zinc-200 bg-white md:block dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="hidden overflow-x-auto rounded-xl border border-zinc-200 bg-white md:block dark:border-zinc-800 dark:bg-zinc-900">
         <table className="w-full text-sm">
           <thead className="border-b border-zinc-200 bg-zinc-50/80 dark:border-zinc-800 dark:bg-zinc-900/60">
             <tr>
