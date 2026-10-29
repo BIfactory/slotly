@@ -9,6 +9,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { AuthedHeader } from "@/components/AuthedHeader";
+import { SettingsLayout } from "@/components/SettingsLayout";
 import { SettingsNav } from "@/components/SettingsNav";
 import { CardSkeleton, PageSkeleton } from "@/components/Skeleton";
 import { Button, FormError, FormSuccess, Input, Label } from "@/components/ui";
@@ -59,7 +60,7 @@ export default function WorkingHoursSettingsPage() {
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <AuthedHeader email={me.email} />
-      <main className="mx-auto max-w-2xl space-y-6 px-6 py-10">
+      <SettingsLayout width="narrow">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             Working hours
@@ -71,7 +72,7 @@ export default function WorkingHoursSettingsPage() {
         <SettingsNav />
         <WorkingHoursCard me={me} onSaved={setMe} />
         <BufferCard me={me} onSaved={setMe} />
-      </main>
+      </SettingsLayout>
     </div>
   );
 }
