@@ -260,6 +260,7 @@ function LocationRow({
               </span>
             )}
           </div>
+          {/* address is required at create time; this guard is defensive only */}
           {location.address && (
             <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
               {location.address}

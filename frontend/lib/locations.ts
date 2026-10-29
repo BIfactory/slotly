@@ -46,8 +46,8 @@ async function handleResponse<T>(res: Response): Promise<T> {
 /** Fetch all locations for the current user. */
 export async function listLocations(): Promise<UserLocation[]> {
   const res = await fetch("/api/me/locations", { credentials: "include" });
-  const body = await handleResponse<{ locations: UserLocation[] }>(res);
-  return body.locations;
+  // Backend returns a bare JSON array, not a {locations:[]} envelope.
+  return handleResponse<UserLocation[]>(res);
 }
 
 /** Create a new location. */
