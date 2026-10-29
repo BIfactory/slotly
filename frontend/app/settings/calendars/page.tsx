@@ -207,7 +207,19 @@ function CalendarsPageInner() {
       return;
     try {
       await disconnectAccount(id);
+      // Optimistic removal so the row disappears immediately.
       setAccounts((prev) => prev.filter((a) => a.id !== id));
+      // Server auto-promotes the next same-provider account to default when the
+      // deleted one was the current default. Refetch to pick up the new
+      // is_default flags so the DefaultPickerCard and badge stay accurate.
+      try {
+        const refreshed = await listCalendarAccounts();
+        setAccounts(refreshed);
+      } catch {
+        // Primary action (disconnect) succeeded — swallow refetch failure so we
+        // don't show a misleading error banner. The optimistic filter is still
+        // correct re: deletion; only is_default may be stale until page reload.
+      }
     } catch (err) {
       setAccountsError(
         err instanceof Error ? err.message : "Couldn't disconnect account.",
