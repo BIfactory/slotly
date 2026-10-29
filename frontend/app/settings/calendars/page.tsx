@@ -638,7 +638,7 @@ function AccountCard({
         )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="truncate font-medium text-zinc-900 dark:text-zinc-50">
+            <p className="min-w-0 truncate font-medium text-zinc-900 dark:text-zinc-50">
               {account.email}
             </p>
             {account.is_default && (
@@ -752,7 +752,6 @@ function DefaultPickerCard({
             id={`default-picker-${provider}`}
             disabled
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-500"
-            aria-label={noAccountsPlaceholder}
           >
             <option value="">{noAccountsPlaceholder}</option>
           </select>
