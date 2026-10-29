@@ -457,3 +457,121 @@ class CreateEventNoAttendeesTest(TestCase):
         # attendees kwarg must be present and be an empty list, not omitted.
         self.assertIn("attendees", kwargs)
         self.assertEqual(kwargs["attendees"], [])
+
+
+# ---------------------------------------------------------------------------
+# Task A2: _pick_write_provider provider kwarg
+# ---------------------------------------------------------------------------
+
+
+from apps.scheduling.models import GoogleAccount, MicrosoftAccount, WriteCalendarDefault
+from apps.scheduling.security import encrypt
+
+
+def _make_google_svc(user, email="x@gmail.com"):
+    from django.utils import timezone
+    from datetime import timedelta
+    return GoogleAccount.objects.create(
+        user=user,
+        google_email=email,
+        access_token_encrypted=encrypt("AT"),
+        refresh_token_encrypted=encrypt("RT"),
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+
+
+def _make_microsoft_svc(user, email="x@outlook.com"):
+    from django.utils import timezone
+    from datetime import timedelta
+    return MicrosoftAccount.objects.create(
+        user=user,
+        microsoft_email=email,
+        access_token_encrypted=encrypt("AT"),
+        refresh_token_encrypted=encrypt("RT"),
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+
+
+@override_settings(FRONTEND_BASE_URL="http://localhost:3000")
+class PickWriteProviderPerProviderTests(TestCase):
+    """A2: _pick_write_provider(user, provider=...) tests."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="ppv@slotly.test", password="x" * 12)
+
+    def test_pick_write_provider_default_returns_primary_google_when_both_connected(self):
+        """provider=None → returns Google when both providers are connected."""
+        from apps.scheduling.services import _pick_write_provider
+
+        g = _make_google_svc(self.user, email="ppv@gmail.com")
+        m = _make_microsoft_svc(self.user, email="ppv@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+
+        provider = _pick_write_provider(self.user)
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "google")
+        self.assertEqual(provider.account_id, g.pk)
+
+    def test_pick_write_provider_forced_microsoft_returns_ms_even_when_primary_is_google(self):
+        """provider='microsoft' → returns Microsoft even though Google default exists."""
+        from apps.scheduling.services import _pick_write_provider
+
+        g = _make_google_svc(self.user, email="ppv@gmail.com")
+        m = _make_microsoft_svc(self.user, email="ppv@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+
+        provider = _pick_write_provider(self.user, provider="microsoft")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "microsoft")
+        self.assertEqual(provider.account_id, m.pk)
+
+    def test_pick_write_provider_forced_provider_returns_none_when_that_provider_not_connected(self):
+        """provider='google' → returns None when only MS is connected (no fallback)."""
+        from apps.scheduling.services import _pick_write_provider
+
+        m = _make_microsoft_svc(self.user, email="ppv@outlook.com")
+        WriteCalendarDefault.objects.create(user=self.user, microsoft_account=m)
+
+        provider = _pick_write_provider(self.user, provider="google")
+        self.assertIsNone(provider)
+
+    def test_pick_write_provider_default_falls_back_to_microsoft_when_only_ms_connected(self):
+        """provider=None → falls back to Microsoft when no Google account exists."""
+        from apps.scheduling.services import _pick_write_provider
+
+        m = _make_microsoft_svc(self.user, email="ppv@outlook.com")
+        WriteCalendarDefault.objects.create(user=self.user, microsoft_account=m)
+
+        provider = _pick_write_provider(self.user)
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "microsoft")
+        self.assertEqual(provider.account_id, m.pk)
+
+    def test_pick_write_provider_forced_google_returns_google_account(self):
+        """provider='google' → returns Google account when Google default is set."""
+        from apps.scheduling.services import _pick_write_provider
+
+        g = _make_google_svc(self.user, email="ppv@gmail.com")
+        m = _make_microsoft_svc(self.user, email="ppv@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+
+        provider = _pick_write_provider(self.user, provider="google")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "google")
+        self.assertEqual(provider.account_id, g.pk)
+
+    def test_pick_write_provider_forced_microsoft_returns_none_when_ms_not_set_in_default(self):
+        """provider='microsoft' → returns None when WCD only has Google FK."""
+        from apps.scheduling.services import _pick_write_provider
+
+        g = _make_google_svc(self.user, email="ppv@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        provider = _pick_write_provider(self.user, provider="microsoft")
+        self.assertIsNone(provider)

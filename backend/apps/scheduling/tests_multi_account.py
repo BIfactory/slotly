@@ -801,3 +801,93 @@ class WritableCalendarsPerAccountMicrosoftTests(TestCase):
         self.assertEqual(resp.status_code, 404)
         body = resp.json()
         self.assertEqual(body.get("code"), "not_found")
+
+
+# ---------------------------------------------------------------------------
+# Task A2: per-provider delete/promote logic
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    GOOGLE_OAUTH_CLIENT_ID="dev-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET="dev-client-secret",
+    FRONTEND_BASE_URL="http://localhost:3000",
+)
+class DeletePromotePerProviderTests(TestCase):
+    """R3: when deleting the Google default, promote the next GoogleAccount
+    (not an MS account) and leave the MS FK untouched."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.user = User.objects.create_user(email="delp@slotly.test", password="x" * 12)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_deleting_google_default_promotes_next_google_not_microsoft(self):
+        """Delete Google B (default) → Google A promoted; MS default unchanged."""
+        g_a = _make_google(self.user, email="delp_a@gmail.com")
+        g_b = _make_google(self.user, email="delp_b@gmail.com")
+        m = _make_microsoft(self.user, email="delp@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g_b, microsoft_account=m
+        )
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g_b.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        # g_b is gone
+        self.assertFalse(GoogleAccount.objects.filter(pk=g_b.pk).exists())
+
+        # WCD row still exists and was updated correctly
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        # Google FK promoted to g_a
+        self.assertEqual(wcd.google_account_id, g_a.pk)
+        # Microsoft FK untouched
+        self.assertEqual(wcd.microsoft_account_id, m.pk)
+
+    def test_deleting_only_google_leaves_ms_default_intact(self):
+        """Delete the only Google account → google_account_id becomes None;
+        microsoft_account_id unchanged; WCD row survives."""
+        g = _make_google(self.user, email="delp_solo@gmail.com")
+        m = _make_microsoft(self.user, email="delp_solo@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        self.assertIsNone(wcd.google_account_id)
+        self.assertEqual(wcd.microsoft_account_id, m.pk)
+
+    def test_deleting_last_account_removes_write_default_row(self):
+        """Delete the only account (Google, no MS) → WCD row removed."""
+        g = _make_google(self.user, email="delp_last@gmail.com")
+        WriteCalendarDefault.objects.create(user=self.user, google_account=g)
+
+        resp = self.client.delete(f"/api/calendar-accounts/g:{g.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        self.assertFalse(WriteCalendarDefault.objects.filter(user=self.user).exists())
+
+    def test_deleting_microsoft_default_promotes_next_microsoft_not_google(self):
+        """Delete MS B (default) → MS A promoted; Google FK untouched."""
+        g = _make_google(self.user, email="delp_g@gmail.com")
+        m_a = _make_microsoft(self.user, email="delp_ms_a@outlook.com")
+        m_b = _make_microsoft(self.user, email="delp_ms_b@outlook.com")
+        WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m_b
+        )
+
+        resp = self.client.delete(f"/api/calendar-accounts/m:{m_b.pk}")
+        self.assertEqual(resp.status_code, 204)
+
+        self.assertFalse(MicrosoftAccount.objects.filter(pk=m_b.pk).exists())
+
+        wcd = WriteCalendarDefault.objects.get(user=self.user)
+        # MS FK promoted to m_a
+        self.assertEqual(wcd.microsoft_account_id, m_a.pk)
+        # Google FK untouched
+        self.assertEqual(wcd.google_account_id, g.pk)
