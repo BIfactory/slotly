@@ -1219,15 +1219,15 @@ function CalendarRow({
 
   return (
     <article className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex items-start gap-4">
+      <div className="flex flex-wrap items-start gap-4">
         <ProviderBadge provider={calendar.provider} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h3 className="truncate font-medium text-zinc-900 dark:text-zinc-50">{calendar.name}</h3>
-            <span className="rounded-full border border-zinc-200 px-2 py-0.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
+            <span className="shrink-0 rounded-full border border-zinc-200 px-2 py-0.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
               {PROVIDER_LABEL[calendar.provider]}
             </span>
-            <span className={`rounded-full px-2 py-0.5 text-xs ${badge.className}`}>{badge.label}</span>
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badge.className}`}>{badge.label}</span>
           </div>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Last synced: {lastSynced}</p>
           {calendar.last_error && calendar.status !== "ok" && (
@@ -1244,14 +1244,14 @@ function CalendarRow({
           <button
             onClick={onSync}
             disabled={busy !== null}
-            className="rounded-md border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            className="min-h-[44px] rounded-md border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
             {busy === "sync" ? "Syncing…" : "Sync now"}
           </button>
           <button
             onClick={onDelete}
             disabled={busy !== null}
-            className="rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
+            className="min-h-[44px] rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
           >
             {busy === "delete" ? "Removing…" : "Remove"}
           </button>
@@ -1402,7 +1402,7 @@ function BridgeSection({
               type="button"
               onClick={() => setEnabled(!calendar.bridge_enabled)}
               disabled={busy !== null}
-              className={`h-9 rounded-md px-4 text-sm font-medium disabled:opacity-50 ${
+              className={`min-h-[44px] rounded-md px-4 text-sm font-medium disabled:opacity-50 ${
                 calendar.bridge_enabled
                   ? "border border-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                   : "bg-indigo-600 text-white hover:bg-indigo-700"
@@ -1426,12 +1426,12 @@ function BridgeSection({
                     readOnly
                     value={calendar.bridge_url}
                     onFocus={(e) => e.currentTarget.select()}
-                    className="flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+                    className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
                   />
                   <button
                     type="button"
                     onClick={onCopy}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-md border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                   >
                     <Copy size={14} aria-hidden />
                     {copied ? "Copied" : "Copy"}
@@ -1440,7 +1440,7 @@ function BridgeSection({
                     type="button"
                     onClick={onRotate}
                     disabled={busy !== null}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-md border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                   >
                     <RefreshCw size={14} aria-hidden />
                     {busy === "rotate" ? "…" : "Rotate"}
