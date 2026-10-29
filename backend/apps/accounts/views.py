@@ -402,7 +402,10 @@ class PublicProfileView(APIView):
             })
         # Build sorted host_providers list so the frontend knows which OAuth
         # providers the host has connected (drives the meeting-link selector).
-        from apps.scheduling.models import GoogleAccount as _GA, MicrosoftAccount as _MA, UserLocation as _UL
+        # NOTE: host_providers lists connected OAuth providers regardless of
+        # booking toggle; frontend intersects with accepts_*_bookings to compute
+        # the 'active' set shown in the meeting-link selector.
+        from apps.scheduling.models import GoogleAccount as _GA, MicrosoftAccount as _MA, UserLocation as _UL, USER_LOCATION_CAP as _LOC_CAP
         _providers: list[str] = []
         if _GA.objects.filter(user=user).exists():
             _providers.append("google")
@@ -413,11 +416,11 @@ class PublicProfileView(APIView):
         _providers = sorted(_providers)
 
         # Host's predefined locations — sort by default-first, then name.
-        # Capped at 20 to keep payload bounded. Visitor-facing fields only
-        # (id, name, address, is_default); created_at / updated_at omitted.
+        # Cap uses the shared USER_LOCATION_CAP constant. Visitor-facing fields
+        # only (id, name, address, is_default); created_at / updated_at omitted.
         _host_locations = list(
             _UL.objects.filter(user=user)
-            .order_by("-is_default", "name")[:20]
+            .order_by("-is_default", "name")[:_LOC_CAP]
             .values("id", "name", "address", "is_default")
         )
 

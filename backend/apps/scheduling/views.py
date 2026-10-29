@@ -1731,12 +1731,11 @@ class MeetingTypeDetailView(APIView):
 
 def _serialize_meeting_type(t: MeetingType) -> dict:
     # Build the nested default_location representation.
+    # select_related("default_location") is applied at every call site so
+    # t.default_location never triggers a deferred-attribute error here.
     dl = None
     if t.default_location_id is not None:
-        try:
-            loc = t.default_location
-        except Exception:  # noqa: BLE001 — guard against deferred attr errors
-            loc = None
+        loc = t.default_location
         if loc is not None:
             dl = {"id": loc.pk, "name": loc.name, "address": loc.address}
     return {
@@ -2463,24 +2462,51 @@ def _provider_for(name: str) -> Any:
 def _resolve_write_provider_for_kind(host, kind: str) -> "_WriteProvider | None":
     """Views-layer wrapper for meeting_link_kind → write provider resolution.
 
-    Mirrors services._resolve_write_provider_for_kind but uses the views-layer
+    Mirrors services._resolve_write_provider_for_kind (including all
+    accepts_*_bookings toggle checks) but uses the views-layer
     _pick_write_provider so that unittest patches on the module-level
     ``create_calendar_event`` name still land correctly for public-booking
     view tests.  The duplication mirrors the existing _pick_write_provider
     duplication documented at line 2325.
     """
     if kind == "google_meet":
+        if not getattr(host, "accepts_google_bookings", True):
+            raise _VE({"meeting_link_kind": "This host isn't accepting Google Meet bookings"})
         p = _pick_write_provider(host, provider="google")
         if p is None:
             raise _VE({"meeting_link_kind": "Google is not connected"})
         return p
     if kind == "teams":
+        if not getattr(host, "accepts_microsoft_bookings", True):
+            raise _VE({"meeting_link_kind": "This host isn't accepting Microsoft Teams bookings"})
         p = _pick_write_provider(host, provider="microsoft")
         if p is None:
             raise _VE({"meeting_link_kind": "Microsoft is not connected"})
         return p
     if kind in ("auto", "none"):
-        return _pick_write_provider(host)
+        # Prefer the primary (default) provider, but only if its toggle is on.
+        # Fall back to the secondary provider if primary's toggle is off.
+        # Raise if both are toggled off or neither is connected.
+        google_ok = getattr(host, "accepts_google_bookings", True)
+        microsoft_ok = getattr(host, "accepts_microsoft_bookings", True)
+
+        if google_ok:
+            p = _pick_write_provider(host, provider="google")
+            if p is not None:
+                return p
+        if microsoft_ok:
+            p = _pick_write_provider(host, provider="microsoft")
+            if p is not None:
+                return p
+        # Both off or no accounts connected at all.
+        from .models import GoogleAccount, MicrosoftAccount
+        has_any = (
+            GoogleAccount.objects.filter(user=host).exists()
+            or MicrosoftAccount.objects.filter(user=host).exists()
+        )
+        if has_any:
+            raise _VE({"detail": "This host is not currently accepting online bookings."})
+        return None
     raise _VE({"meeting_link_kind": "invalid"})
 
 
@@ -2541,7 +2567,7 @@ def _client_ip(request) -> str:
 # G2 — /api/me/locations CRUD
 # ─────────────────────────────────────────────────────────────────────────────
 
-_LOCATION_CAP = 20
+from .models import USER_LOCATION_CAP as _LOCATION_CAP
 
 
 def _serialize_location(loc) -> dict:

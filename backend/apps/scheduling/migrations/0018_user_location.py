@@ -42,7 +42,7 @@ class Migration(migrations.Migration):
                     ),
                 ],
                 "indexes": [
-                    models.Index(fields=["user", "is_default"], name="scheduling_userlocation_user_is_default_idx"),
+                    models.Index(fields=["user", "is_default"], name="sched_uloc_user_is_default_idx"),
                 ],
             },
         ),

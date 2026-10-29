@@ -1610,3 +1610,68 @@ class PublicMeetingMeetingLinkKindTests(TestCase):
         resp = self._post(meeting_link_kind="teams")
         self.assertEqual(resp.status_code, 400, resp.content)
         self.assertIn("meeting_link_kind", resp.json())
+
+
+# ---------------------------------------------------------------------------
+# Regression: public booking endpoint must respect accepts_*_bookings toggles
+# (was bypassed because the views-layer _resolve_write_provider_for_kind
+#  duplicate lacked the toggle checks present in services.py).
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    FRONTEND_BASE_URL="http://localhost:3000",
+    TIME_ZONE="UTC",
+)
+class PublicBookingToggleEnforcementTests(TestCase):
+    """POST /api/public/meetings/<token> must reject requests when the host has
+    the relevant accepts_*_bookings toggle turned off, even if the provider
+    is otherwise connected (regression guard for F3-critical)."""
+
+    def setUp(self):
+        from django.core.cache import cache as _cache
+        _cache.clear()
+        UserModel = get_user_model()
+        self.host = UserModel.objects.create_user(
+            email="host@toggle.local", password="pwpw12345xyz"
+        )
+        self.host.share_enabled = True
+        self.host.save(update_fields=["share_enabled"])
+        _connect_google(self.host)
+        self.client = APIClient()
+
+    def _post(self, **overrides):
+        start, end = _future_slot()
+        body = {
+            "visitor_name": "Toggle Visitor",
+            "visitor_email": "toggle@example.com",
+            "start": start,
+            "end": end,
+            "kind": "online",
+        }
+        body.update(overrides)
+        return self.client.post(
+            reverse("public-meetings-create", args=[str(self.host.share_token)]),
+            body,
+            format="json",
+        )
+
+    def test_google_meet_rejected_when_accepts_google_bookings_false(self):
+        """meeting_link_kind='google_meet' + accepts_google_bookings=False → 400."""
+        self.host.accepts_google_bookings = False
+        self.host.save(update_fields=["accepts_google_bookings"])
+        resp = self._post(meeting_link_kind="google_meet")
+        self.assertEqual(resp.status_code, 400, resp.content)
+        data = resp.json()
+        self.assertIn("meeting_link_kind", data)
+        self.assertIn("Google Meet", str(data["meeting_link_kind"]))
+
+    def test_auto_both_toggles_off_rejected(self):
+        """kind='auto' + both accepts_*_bookings=False → 400 with 'detail' key."""
+        self.host.accepts_google_bookings = False
+        self.host.accepts_microsoft_bookings = False
+        self.host.save(update_fields=["accepts_google_bookings", "accepts_microsoft_bookings"])
+        resp = self._post()
+        self.assertEqual(resp.status_code, 400, resp.content)
+        data = resp.json()
+        self.assertIn("detail", data)

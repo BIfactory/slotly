@@ -828,8 +828,7 @@ class ResolveWriteProviderToggleTests(TestCase):
         """kind='google_meet' + accepts_google_bookings=False → ValidationError."""
         from apps.scheduling.services import _resolve_write_provider_for_kind
 
-        _make_providers = self._make_providers
-        _make_providers()
+        self._make_providers()
         self.user.accepts_google_bookings = False
         self.user.save()
 

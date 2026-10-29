@@ -118,8 +118,8 @@ function PublicProfilePageInner() {
    * — the host is genuinely not accepting any kind of booking right now.
    */
   const fullyDegraded = useMemo(
-    () => activeOnlineProviders.length === 0 && hostLocations.length === 0 && data?.booking_enabled === false,
-    [activeOnlineProviders, hostLocations, data],
+    () => activeOnlineProviders.length === 0 && hostLocations.length === 0,
+    [activeOnlineProviders, hostLocations],
   );
 
   if (error === "not_found") {

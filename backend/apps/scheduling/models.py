@@ -49,10 +49,16 @@ class UserLocation(models.Model):
                 name="unique_location_name_per_user",
             ),
         ]
-        indexes = [Index(fields=["user", "is_default"])]
+        indexes = [Index(fields=["user", "is_default"], name="sched_uloc_user_is_default_idx")]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.user_id})"
+
+
+# Maximum number of saved locations per user. Shared constant used by the
+# CRUD view (scheduling) and the public profile view (accounts) so both caps
+# stay in sync without a second hard-coded literal.
+USER_LOCATION_CAP = 20
 
 
 class GoogleAccount(models.Model):

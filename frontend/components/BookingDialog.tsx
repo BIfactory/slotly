@@ -228,6 +228,23 @@ export function BookingDialog({
     }
   }, [open, interval, startOptions, startMin]);
 
+  // When kind transitions TO "physical", ensure pickedLocationId points to a
+  // valid host location (or "custom"). If it's stale (e.g. null or an id that
+  // no longer exists), snap to the host's default (or first) location.
+  // We do NOT reset when the user has explicitly chosen "custom" — that is a
+  // deliberate selection and should survive a round-trip online→physical.
+  useEffect(function syncPhysicalLocation() {
+    if (!open || kind !== "physical" || hostLocations.length === 0) return;
+    const isValidId = typeof pickedLocationId === "number" && hostLocations.some((l) => l.id === pickedLocationId);
+    if (!isValidId && pickedLocationId !== "custom") {
+      const defaultLoc = hostLocations.find((l) => l.is_default) ?? hostLocations[0];
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPickedLocationId(defaultLoc.id);
+      setLocation(defaultLoc.address);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, hostLocations]);
+
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
@@ -385,10 +402,10 @@ export function BookingDialog({
 
           {kind === "physical" && hostLocations.length > 0 && (
             <div className="space-y-1">
-              <MicroLabel>Pick a location</MicroLabel>
+              <MicroLabel id="pick-location-label">Pick a location</MicroLabel>
               {hostLocations.length <= 3 ? (
                 // Radio list for 1–3 locations.
-                <div className="space-y-1.5">
+                <div role="radiogroup" aria-labelledby="pick-location-label" className="space-y-1.5">
                   {hostLocations.map((loc) => (
                     <label
                       key={loc.id}
@@ -788,10 +805,11 @@ function QuestionField({
 /** Micro uppercase label — same info as `<Label>` at a fraction of the
  * vertical footprint. Used inside the dialog to squeeze rows on mobile
  * without hiding what the field means. */
-function MicroLabel({ htmlFor, children }: { htmlFor?: string; children: React.ReactNode }) {
+function MicroLabel({ htmlFor, id, children }: { htmlFor?: string; id?: string; children: React.ReactNode }) {
   return (
     <label
       htmlFor={htmlFor}
+      id={id}
       className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400"
     >
       {children}

@@ -361,12 +361,12 @@ function EditorModal({
                 }}
                 className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
               >
+                <option value="custom">Enter a different location…</option>
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.name} — {l.address}
                   </option>
                 ))}
-                <option value="custom">Enter a different location…</option>
               </select>
             )}
             {(locations.length === 0 || defaultLocationId === null) && (
