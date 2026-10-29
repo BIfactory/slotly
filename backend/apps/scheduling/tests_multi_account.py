@@ -41,13 +41,17 @@ class WriteCalendarDefaultConstraintTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="a@x.test", password="x" * 12)
 
-    def test_cannot_point_to_both_google_and_microsoft(self):
+    def test_can_point_to_both_google_and_microsoft_simultaneously(self):
+        # Task A1: XOR constraint removed. Both FKs may be non-null at once so
+        # a user with two providers connected can have a write default for each.
         g = _make_google(self.user)
         m = _make_microsoft(self.user)
-        with self.assertRaises(IntegrityError):
-            WriteCalendarDefault.objects.create(
-                user=self.user, google_account=g, microsoft_account=m
-            )
+        wd = WriteCalendarDefault.objects.create(
+            user=self.user, google_account=g, microsoft_account=m
+        )
+        self.assertIsNotNone(wd.pk)
+        self.assertEqual(wd.google_account_id, g.pk)
+        self.assertEqual(wd.microsoft_account_id, m.pk)
 
     def test_cannot_be_both_null(self):
         with self.assertRaises(IntegrityError):

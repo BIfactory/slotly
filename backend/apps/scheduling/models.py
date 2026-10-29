@@ -309,9 +309,14 @@ class WriteCalendarDefault(models.Model):
     """Records which of the user's linked OAuth accounts is the
     *write-side provider* — the one that receives new calendar events.
 
-    Exactly one of ``google_account`` / ``microsoft_account`` must be
-    set; the other must be NULL.  This invariant is enforced at the DB
-    level via a CheckConstraint (XOR) so no application bug can violate it.
+    Both ``google_account`` and ``microsoft_account`` can be non-null
+    simultaneously: a user who has connected both providers can independently
+    pick which Google account AND which Microsoft account should receive new
+    events. At least one must be set; both-null is rejected by the DB
+    constraint ``write_default_has_at_least_one_provider``.
+
+    The old XOR constraint (``write_default_exactly_one_provider``) has been
+    removed as of migration 0015.
     """
 
     user = models.OneToOneField(
@@ -337,31 +342,45 @@ class WriteCalendarDefault(models.Model):
     class Meta:
         constraints = [
             CheckConstraint(
-                condition=(
-                    Q(google_account__isnull=False) & Q(microsoft_account__isnull=True)
-                )
-                | (
-                    Q(google_account__isnull=True) & Q(microsoft_account__isnull=False)
-                ),
-                name="write_default_exactly_one_provider",
+                condition=Q(google_account__isnull=False) | Q(microsoft_account__isnull=False),
+                name="write_default_has_at_least_one_provider",
             ),
         ]
 
+    def default_write_target(self, provider: str):
+        """Return the FK for *provider* (``"google"`` or ``"microsoft"``), or None."""
+        if provider == "google":
+            return self.google_account
+        if provider == "microsoft":
+            return self.microsoft_account
+        return None
+
+    def has_default(self, provider: str) -> bool:
+        """Return True if the given provider has a non-null FK on this row."""
+        return self.default_write_target(provider) is not None
+
+    def primary_write_target(self):
+        """Back-compat accessor: returns Google account if set, else Microsoft.
+
+        Callers that do not yet distinguish per-provider defaults use this to
+        get *a* write target without caring which provider it is. Google takes
+        precedence because it was the original default provider.
+        """
+        return self.google_account or self.microsoft_account
+
     @property
     def selected_account(self):
-        """Return the non-null account (Google or Microsoft)."""
-        if self.google_account_id is not None:
-            return self.google_account
-        return self.microsoft_account
+        """Back-compat: Return the primary non-null account (Google > Microsoft)."""
+        return self.primary_write_target()
 
     @property
     def provider(self) -> str:
-        """Return ``"google"`` or ``"microsoft"``."""
+        """Back-compat: Return ``"google"`` or ``"microsoft"`` for the primary account."""
         return "google" if self.google_account_id is not None else "microsoft"
 
     @property
     def write_calendar_id(self) -> str:
-        """Proxy the write_calendar_id from whichever account is selected."""
+        """Proxy the write_calendar_id from the primary account."""
         return self.selected_account.write_calendar_id
 
     def __str__(self) -> str:
