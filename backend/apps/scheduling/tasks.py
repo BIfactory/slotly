@@ -83,6 +83,7 @@ def _sync_google(account_pk: int) -> dict:
         return {"skipped": True, "reason": "account not found"}
 
     t_start = time.monotonic()
+    calendar_ids: list[str] = []
     try:
         calendars = list_all_calendars(account)
         calendar_ids = [c["id"] for c in calendars]
@@ -108,8 +109,8 @@ def _sync_google(account_pk: int) -> dict:
         duration_ms = int((time.monotonic() - t_start) * 1000)
         logger.warning(
             "event=oauth_busy_sync provider=google account_id=%s"
-            " calendars=0 windows_written=0 duration_ms=%s error=%r",
-            account_pk, duration_ms, str(exc)[:200],
+            " calendars=%s windows_written=0 duration_ms=%s error=%r",
+            account_pk, len(calendar_ids), duration_ms, str(exc)[:200],
         )
         return {"error": str(exc)[:200]}
 
@@ -153,6 +154,7 @@ def _sync_microsoft(account_pk: int) -> dict:
         return {"skipped": True, "reason": "account not found"}
 
     t_start = time.monotonic()
+    calendar_ids: list[str] = []
     try:
         calendars = list_all_calendars(account)
         calendar_ids = [c["id"] for c in calendars]
@@ -177,8 +179,8 @@ def _sync_microsoft(account_pk: int) -> dict:
         duration_ms = int((time.monotonic() - t_start) * 1000)
         logger.warning(
             "event=oauth_busy_sync provider=microsoft account_id=%s"
-            " calendars=0 windows_written=0 duration_ms=%s error=%r",
-            account_pk, duration_ms, str(exc)[:200],
+            " calendars=%s windows_written=0 duration_ms=%s error=%r",
+            account_pk, len(calendar_ids), duration_ms, str(exc)[:200],
         )
         return {"error": str(exc)[:200]}
 
