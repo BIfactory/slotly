@@ -95,10 +95,13 @@ def authorize_url(state: str) -> str:
         "response_mode": "query",
         "scope": " ".join(scopes),
         "state": state,
-        # `prompt=consent` guarantees offline_access grants a fresh refresh
-        # token; corporate tenants that require admin consent will still
-        # gate on their own policy.
-        "prompt": "consent",
+        # prompt=select_account forces the account picker so users adding a
+        # second account are never silently re-linked to the existing one.
+        # consent is kept (space-separated multi-value) to guarantee
+        # offline_access grants a fresh refresh token every time. Corporate
+        # tenants that require admin consent will still gate on their own
+        # policy.
+        "prompt": "select_account consent",
     }
     return f"{MS_AUTHORIZE_URL}?{urlencode(params)}"
 
