@@ -1691,7 +1691,7 @@ class MeetingTypeListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request) -> Response:
-        rows = MeetingType.objects.filter(host=request.user).order_by("display_order", "id")
+        rows = MeetingType.objects.filter(host=request.user).select_related("default_location").order_by("display_order", "id")
         return Response({"types": [_serialize_meeting_type(t) for t in rows]})
 
     def post(self, request: Request) -> Response:
@@ -1699,6 +1699,7 @@ class MeetingTypeListView(APIView):
         if err is not None:
             return Response(err, status=400)
         t = MeetingType.objects.create(host=request.user, **cleaned)
+        t = MeetingType.objects.select_related("default_location").get(pk=t.pk)
         return Response(_serialize_meeting_type(t), status=201)
 
 
@@ -1716,6 +1717,9 @@ class MeetingTypeDetailView(APIView):
         for field, value in cleaned.items():
             setattr(t, field, value)
         t.save()
+        # Re-fetch with select_related so _serialize_meeting_type can read
+        # the nested default_location without an extra lazy query per call.
+        t = MeetingType.objects.select_related("default_location").get(pk=t.pk)
         return Response(_serialize_meeting_type(t))
 
     def delete(self, request: Request, pk: int) -> Response:
@@ -1726,6 +1730,14 @@ class MeetingTypeDetailView(APIView):
 
 
 def _serialize_meeting_type(t: MeetingType) -> dict:
+    # Build the nested default_location representation.
+    # select_related("default_location") is applied at every call site so
+    # t.default_location never triggers a deferred-attribute error here.
+    dl = None
+    if t.default_location_id is not None:
+        loc = t.default_location
+        if loc is not None:
+            dl = {"id": loc.pk, "name": loc.name, "address": loc.address}
     return {
         "id": t.pk,
         "name": t.name,
@@ -1740,6 +1752,8 @@ def _serialize_meeting_type(t: MeetingType) -> dict:
         "questions": list(t.questions or []),
         "redirect_url": t.redirect_url,
         "meeting_link_kind": t.meeting_link_kind,
+        "default_location_id": t.default_location_id,
+        "default_location": dl,
     }
 
 
@@ -1844,6 +1858,20 @@ def _validate_meeting_type_payload(
         if mlk not in MeetingLinkKind.values:
             return {}, {"meeting_link_kind": "invalid"}
         cleaned["meeting_link_kind"] = mlk
+
+    if "default_location_id" in body:
+        raw_dlid = _get("default_location_id")
+        if raw_dlid is None:
+            cleaned["default_location_id"] = None
+        else:
+            try:
+                dlid = int(raw_dlid)
+            except (TypeError, ValueError):
+                return {}, {"default_location_id": ["Location not found."]}
+            from .models import UserLocation
+            if not UserLocation.objects.filter(pk=dlid, user=host).exists():
+                return {}, {"default_location_id": ["Location not found."]}
+            cleaned["default_location_id"] = dlid
 
     if "questions" in body:
         raw_questions = _get("questions") or []
@@ -2434,24 +2462,51 @@ def _provider_for(name: str) -> Any:
 def _resolve_write_provider_for_kind(host, kind: str) -> "_WriteProvider | None":
     """Views-layer wrapper for meeting_link_kind → write provider resolution.
 
-    Mirrors services._resolve_write_provider_for_kind but uses the views-layer
+    Mirrors services._resolve_write_provider_for_kind (including all
+    accepts_*_bookings toggle checks) but uses the views-layer
     _pick_write_provider so that unittest patches on the module-level
     ``create_calendar_event`` name still land correctly for public-booking
     view tests.  The duplication mirrors the existing _pick_write_provider
     duplication documented at line 2325.
     """
     if kind == "google_meet":
+        if not getattr(host, "accepts_google_bookings", True):
+            raise _VE({"meeting_link_kind": "This host isn't accepting Google Meet bookings"})
         p = _pick_write_provider(host, provider="google")
         if p is None:
             raise _VE({"meeting_link_kind": "Google is not connected"})
         return p
     if kind == "teams":
+        if not getattr(host, "accepts_microsoft_bookings", True):
+            raise _VE({"meeting_link_kind": "This host isn't accepting Microsoft Teams bookings"})
         p = _pick_write_provider(host, provider="microsoft")
         if p is None:
             raise _VE({"meeting_link_kind": "Microsoft is not connected"})
         return p
     if kind in ("auto", "none"):
-        return _pick_write_provider(host)
+        # Prefer the primary (default) provider, but only if its toggle is on.
+        # Fall back to the secondary provider if primary's toggle is off.
+        # Raise if both are toggled off or neither is connected.
+        google_ok = getattr(host, "accepts_google_bookings", True)
+        microsoft_ok = getattr(host, "accepts_microsoft_bookings", True)
+
+        if google_ok:
+            p = _pick_write_provider(host, provider="google")
+            if p is not None:
+                return p
+        if microsoft_ok:
+            p = _pick_write_provider(host, provider="microsoft")
+            if p is not None:
+                return p
+        # Both off or no accounts connected at all.
+        from .models import GoogleAccount, MicrosoftAccount
+        has_any = (
+            GoogleAccount.objects.filter(user=host).exists()
+            or MicrosoftAccount.objects.filter(user=host).exists()
+        )
+        if has_any:
+            raise _VE({"detail": "This host is not currently accepting online bookings."})
+        return None
     raise _VE({"meeting_link_kind": "invalid"})
 
 
@@ -2506,5 +2561,157 @@ def _client_ip(request) -> str:
     if xff:
         return xff.split(",")[0].strip()[:64]
     return (request.META.get("REMOTE_ADDR") or "unknown")[:64]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# G2 — /api/me/locations CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+
+from .models import USER_LOCATION_CAP as _LOCATION_CAP
+
+
+def _serialize_location(loc) -> dict:
+    from .serializers import UserLocationSerializer
+    return UserLocationSerializer(loc).data
+
+
+def _unset_default_siblings(user, exclude_pk: int | None = None) -> None:
+    """Unset is_default on all of the user's locations except the given pk.
+    Must be called inside an atomic block."""
+    from .models import UserLocation
+    qs = UserLocation.objects.filter(user=user, is_default=True)
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    qs.update(is_default=False)
+
+
+class UserLocationListCreateView(APIView):
+    """GET  /api/me/locations — list caller's locations.
+    POST /api/me/locations — create a new location."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        from .models import UserLocation
+        locs = (
+            UserLocation.objects
+            .filter(user=request.user)
+            .order_by("-is_default", "name")
+        )
+        return Response([_serialize_location(loc) for loc in locs])
+
+    def post(self, request: Request) -> Response:
+        from .models import UserLocation
+        from .serializers import UserLocationSerializer
+
+        # 20-cap check.
+        current_count = UserLocation.objects.filter(user=request.user).count()
+        if current_count >= _LOCATION_CAP:
+            return Response(
+                {"detail": "You can have at most 20 locations."},
+                status=400,
+            )
+
+        ser = UserLocationSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=400)
+
+        name = ser.validated_data["name"]
+        address = ser.validated_data["address"]
+        is_default = ser.validated_data.get("is_default", False)
+
+        # Duplicate-name check (return field-level DRF-style error).
+        if UserLocation.objects.filter(user=request.user, name=name).exists():
+            return Response(
+                {"name": ["A location with this name already exists."]},
+                status=400,
+            )
+
+        with transaction.atomic():
+            if is_default:
+                _unset_default_siblings(request.user, exclude_pk=None)
+            loc = UserLocation.objects.create(
+                user=request.user,
+                name=name,
+                address=address,
+                is_default=is_default,
+            )
+
+        return Response(_serialize_location(loc), status=201)
+
+
+class UserLocationDetailView(APIView):
+    """PATCH  /api/me/locations/<pk> — partial-update a location.
+    DELETE /api/me/locations/<pk> — remove it."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _get_location(self, request: Request, pk: int):
+        from .models import UserLocation
+        try:
+            return UserLocation.objects.get(pk=pk, user=request.user)
+        except UserLocation.DoesNotExist:
+            return None
+
+    def patch(self, request: Request, pk: int) -> Response:
+        from .models import UserLocation
+        from .serializers import UserLocationSerializer
+
+        loc = self._get_location(request, pk)
+        if loc is None:
+            return Response({"detail": "Not found."}, status=404)
+
+        # Build a partial serializer — only validate fields that were sent.
+        ser = UserLocationSerializer(loc, data=request.data, partial=True)
+        if not ser.is_valid():
+            return Response(ser.errors, status=400)
+
+        vd = ser.validated_data
+
+        # Duplicate-name check: only when name is being changed to a new value.
+        if "name" in vd and vd["name"] != loc.name:
+            if UserLocation.objects.filter(user=request.user, name=vd["name"]).exists():
+                return Response(
+                    {"name": ["A location with this name already exists."]},
+                    status=400,
+                )
+
+        with transaction.atomic():
+            if vd.get("is_default") is True:
+                _unset_default_siblings(request.user, exclude_pk=loc.pk)
+
+            for field, value in vd.items():
+                setattr(loc, field, value)
+            loc.save()
+
+        return Response(_serialize_location(loc))
+
+    def delete(self, request: Request, pk: int) -> Response:
+        from .models import UserLocation
+        deleted, _ = UserLocation.objects.filter(pk=pk, user=request.user).delete()
+        if deleted == 0:
+            return Response({"detail": "Not found."}, status=404)
+        return Response(status=204)
+
+
+class UserLocationSetDefaultView(APIView):
+    """POST /api/me/locations/<pk>/set-default — mark this location as the default,
+    atomically clearing is_default on all siblings."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request, pk: int) -> Response:
+        from .models import UserLocation
+        try:
+            loc = UserLocation.objects.get(pk=pk, user=request.user)
+        except UserLocation.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+
+        with transaction.atomic():
+            _unset_default_siblings(request.user, exclude_pk=loc.pk)
+            loc.is_default = True
+            loc.save(update_fields=["is_default", "updated_at"])
+
+        return Response(_serialize_location(loc))
 
 

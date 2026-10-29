@@ -374,17 +374,38 @@ class PublicProfileView(APIView):
         # the host hasn't defined any — /u/<token> falls back to the
         # generic "pick any free time" flow.
         from apps.scheduling.models import MeetingType as _MT
-        types = list(
+        _mt_qs = (
             _MT.objects.filter(host=user, is_active=True)
+            .select_related("default_location")
             .order_by("display_order", "id")
-            .values(
-                "slug", "name", "description", "duration_min",
-                "kind", "location", "color", "questions", "redirect_url",
-            )
         )
+        types = []
+        for _mt in _mt_qs:
+            _dl = None
+            if _mt.default_location_id is not None and _mt.default_location is not None:
+                _dl = {
+                    "id": _mt.default_location.pk,
+                    "name": _mt.default_location.name,
+                    "address": _mt.default_location.address,
+                }
+            types.append({
+                "slug": _mt.slug,
+                "name": _mt.name,
+                "description": _mt.description,
+                "duration_min": _mt.duration_min,
+                "kind": _mt.kind,
+                "location": _mt.location,
+                "color": _mt.color,
+                "questions": _mt.questions,
+                "redirect_url": _mt.redirect_url,
+                "default_location": _dl,
+            })
         # Build sorted host_providers list so the frontend knows which OAuth
         # providers the host has connected (drives the meeting-link selector).
-        from apps.scheduling.models import GoogleAccount as _GA, MicrosoftAccount as _MA
+        # NOTE: host_providers lists connected OAuth providers regardless of
+        # booking toggle; frontend intersects with accepts_*_bookings to compute
+        # the 'active' set shown in the meeting-link selector.
+        from apps.scheduling.models import GoogleAccount as _GA, MicrosoftAccount as _MA, UserLocation as _UL, USER_LOCATION_CAP as _LOC_CAP
         _providers: list[str] = []
         if _GA.objects.filter(user=user).exists():
             _providers.append("google")
@@ -393,6 +414,15 @@ class PublicProfileView(APIView):
         # List is already in sorted order (google < microsoft alphabetically);
         # explicit sort guards against future providers being added out of order.
         _providers = sorted(_providers)
+
+        # Host's predefined locations — sort by default-first, then name.
+        # Cap uses the shared USER_LOCATION_CAP constant. Visitor-facing fields
+        # only (id, name, address, is_default); created_at / updated_at omitted.
+        _host_locations = list(
+            _UL.objects.filter(user=user)
+            .order_by("-is_default", "name")[:_LOC_CAP]
+            .values("id", "name", "address", "is_default")
+        )
 
         return Response({
             "profile": profile,
@@ -408,12 +438,19 @@ class PublicProfileView(APIView):
             # Public flag consumed by /u/<token>. When False, the frontend
             # shows a soft "not yet accepting online bookings" banner and
             # hides the booking dialog.
-            "booking_enabled": _has_writable_provider(user),
+            "booking_enabled": _has_bookable_online_provider(user),
             "meeting_types": types,
             # Sorted list of OAuth provider names the host has connected.
             # Used by /u/[token] to conditionally show the meeting-link
             # selector when the host has both Google and Microsoft connected.
             "host_providers": _providers,
+            # Per-provider booking toggles. Consumed by /u/[token] to filter
+            # out disabled providers from the meeting-link selector.
+            "accepts_google_bookings": user.accepts_google_bookings,
+            "accepts_microsoft_bookings": user.accepts_microsoft_bookings,
+            # Host's predefined in-person locations. Empty list when none are
+            # set. Sorted: default row first, then alphabetical by name.
+            "host_locations": _host_locations,
         })
 
 
@@ -435,7 +472,10 @@ def _has_writable_provider(user) -> bool:
     """True if `user` has at least one OAuth-connected calendar we can write
     events into. Right now that's Google; adding Microsoft (or others) later
     just extends this check — everything above (public flag, /people hint,
-    booking endpoints) then picks the change up automatically."""
+    booking endpoints) then picks the change up automatically.
+
+    NOTE: This does NOT check per-provider booking toggles. Use
+    _has_bookable_online_provider for the public booking page check."""
     from apps.scheduling.models import GoogleAccount
     if GoogleAccount.objects.filter(user=user).exists():
         return True
@@ -444,6 +484,28 @@ def _has_writable_provider(user) -> bool:
     except ImportError:  # noqa: BLE001
         return False
     return MicrosoftAccount.objects.filter(user=user).exists()
+
+
+def _has_bookable_online_provider(user) -> bool:
+    """True if `user` has at least one OAuth-connected calendar AND the
+    corresponding per-provider booking toggle is enabled.
+
+    Used by the public booking page (/u/<token>) to determine whether
+    booking_enabled should be True. A connected provider whose toggle is off
+    counts as if it isn't connected for this purpose.
+
+    An unconnected provider whose toggle is True is irrelevant (off either way).
+    """
+    from apps.scheduling.models import GoogleAccount
+    google_connected = GoogleAccount.objects.filter(user=user).exists()
+    if google_connected and user.accepts_google_bookings:
+        return True
+    try:
+        from apps.scheduling.models import MicrosoftAccount
+    except ImportError:  # noqa: BLE001
+        return False
+    microsoft_connected = MicrosoftAccount.objects.filter(user=user).exists()
+    return microsoft_connected and user.accepts_microsoft_bookings
 
 
 def _holidays_in_range(country: str, from_date, to_date) -> list[dict]:

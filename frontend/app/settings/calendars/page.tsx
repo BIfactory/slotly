@@ -45,6 +45,7 @@ import {
   disconnectAccount,
   patchAccountWriteCalendar,
 } from "@/lib/calendar-accounts";
+import { getMe, patchMe } from "@/lib/me";
 
 const PROVIDER_LABEL: Record<CalendarProvider, string> = {
   google: "Google",
@@ -95,6 +96,8 @@ function CalendarsPageInner() {
   const [email, setEmail] = useState<string>("");
   const [accounts, setAccounts] = useState<CalendarAccount[]>([]);
   const [accountsError, setAccountsError] = useState<string | null>(null);
+  const [acceptsGoogle, setAcceptsGoogle] = useState(true);
+  const [acceptsMicrosoft, setAcceptsMicrosoft] = useState(true);
 
   const googleParam = searchParams?.get("google");
   const microsoftParam = searchParams?.get("microsoft");
@@ -123,15 +126,20 @@ function CalendarsPageInner() {
         return;
       }
       setEmail(session.data?.user?.email ?? "");
-      const [cals, accts] = await Promise.allSettled([
+      const [cals, accts, me] = await Promise.allSettled([
         listCalendars(),
         listCalendarAccounts(),
+        getMe(),
       ]);
       setCalendars(cals.status === "fulfilled" ? cals.value : []);
       if (accts.status === "fulfilled") {
         setAccounts(accts.value);
       } else {
         setAccountsError("Couldn't load connected accounts.");
+      }
+      if (me.status === "fulfilled") {
+        setAcceptsGoogle(me.value.accepts_google_bookings);
+        setAcceptsMicrosoft(me.value.accepts_microsoft_bookings);
       }
       setLoaded(true);
     })().catch(() => router.replace("/auth/login"));
@@ -247,6 +255,32 @@ function CalendarsPageInner() {
     [],
   );
 
+  const handleBookingToggle = useCallback(
+    async (provider: "google" | "microsoft", next: boolean) => {
+      const field =
+        provider === "google" ? "accepts_google_bookings" : "accepts_microsoft_bookings";
+      // Optimistic update.
+      if (provider === "google") {
+        setAcceptsGoogle(next);
+      } else {
+        setAcceptsMicrosoft(next);
+      }
+      try {
+        await patchMe({ [field]: next });
+      } catch {
+        // Revert on error.
+        if (provider === "google") {
+          setAcceptsGoogle(!next);
+        } else {
+          setAcceptsMicrosoft(!next);
+        }
+        setAccountsError("Couldn't save booking preference. Please try again.");
+        setTimeout(() => setAccountsError(null), 5000);
+      }
+    },
+    [],
+  );
+
   if (!loaded) {
     return (
       <PageSkeleton>
@@ -326,26 +360,28 @@ function CalendarsPageInner() {
             <Banner kind="err">{accountsError}</Banner>
           )}
 
-          {accounts.length > 0 && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <DefaultPickerCard
-                provider="google"
-                accounts={accounts.filter((a) => a.provider === "google")}
-                currentDefaultId={
-                  accounts.find((a) => a.provider === "google" && a.is_default)?.id ?? null
-                }
-                onSelect={handleSetDefault}
-              />
-              <DefaultPickerCard
-                provider="microsoft"
-                accounts={accounts.filter((a) => a.provider === "microsoft")}
-                currentDefaultId={
-                  accounts.find((a) => a.provider === "microsoft" && a.is_default)?.id ?? null
-                }
-                onSelect={handleSetDefault}
-              />
-            </div>
-          )}
+          <div className="flex flex-col gap-4">
+            <DefaultPickerCard
+              provider="google"
+              accounts={accounts.filter((a) => a.provider === "google")}
+              currentDefaultId={
+                accounts.find((a) => a.provider === "google" && a.is_default)?.id ?? null
+              }
+              onSelect={handleSetDefault}
+              bookingEnabled={acceptsGoogle}
+              onBookingToggle={(next) => handleBookingToggle("google", next)}
+            />
+            <DefaultPickerCard
+              provider="microsoft"
+              accounts={accounts.filter((a) => a.provider === "microsoft")}
+              currentDefaultId={
+                accounts.find((a) => a.provider === "microsoft" && a.is_default)?.id ?? null
+              }
+              onSelect={handleSetDefault}
+              bookingEnabled={acceptsMicrosoft}
+              onBookingToggle={(next) => handleBookingToggle("microsoft", next)}
+            />
+          </div>
 
           {accounts.length === 0 ? (
             <EmptyAccountsPanel />
@@ -728,11 +764,15 @@ function DefaultPickerCard({
   accounts,
   currentDefaultId,
   onSelect,
+  bookingEnabled,
+  onBookingToggle,
 }: {
   provider: "google" | "microsoft";
   accounts: CalendarAccount[];
   currentDefaultId: string | null;
   onSelect: (id: string) => Promise<void>;
+  bookingEnabled: boolean;
+  onBookingToggle: (next: boolean) => void;
 }) {
   const [loading, setLoading] = useState(false);
 
@@ -742,6 +782,15 @@ function DefaultPickerCard({
       ? "No Google accounts connected"
       : "No Microsoft accounts connected";
   const isDisabled = accounts.length <= 1 || loading;
+  const hasAccounts = accounts.length > 0;
+
+  const toggleId = `booking-toggle-${provider}`;
+  const connectFirstText =
+    provider === "google" ? "Connect Google first" : "Connect Microsoft first";
+  const helpText =
+    provider === "google"
+      ? "Hide the Google Meet option on your booking page"
+      : "Hide the Microsoft Teams option on your booking page";
 
   async function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const id = e.target.value;
@@ -762,7 +811,7 @@ function DefaultPickerCard({
       >
         Default {providerLabel} account for new bookings
       </label>
-      {accounts.length === 0 ? (
+      {!hasAccounts ? (
         <>
           <select
             id={`default-picker-${provider}`}
@@ -794,6 +843,42 @@ function DefaultPickerCard({
           )}
         </>
       )}
+
+      {/* Booking toggle */}
+      <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+        <div className="flex items-center justify-between gap-3">
+          <label
+            htmlFor={toggleId}
+            className={`text-sm font-medium ${hasAccounts ? "cursor-pointer text-zinc-700 dark:text-zinc-300" : "cursor-not-allowed text-zinc-400 dark:text-zinc-500"}`}
+          >
+            Allow bookings via {providerLabel}
+          </label>
+          <button
+            id={toggleId}
+            role="switch"
+            type="button"
+            aria-checked={bookingEnabled}
+            disabled={!hasAccounts}
+            onClick={() => hasAccounts && onBookingToggle(!bookingEnabled)}
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${bookingEnabled ? "bg-indigo-600" : "bg-zinc-300 dark:bg-zinc-600"}`}
+          >
+            <span className="sr-only">Allow bookings via {providerLabel}</span>
+            <span
+              aria-hidden="true"
+              className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${bookingEnabled ? "translate-x-4" : "translate-x-0"}`}
+            />
+          </button>
+        </div>
+        {!hasAccounts ? (
+          <p className="mt-1.5 text-xs text-zinc-400 dark:text-zinc-500">
+            {connectFirstText}
+          </p>
+        ) : (
+          <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+            {helpText}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

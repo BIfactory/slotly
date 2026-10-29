@@ -47,6 +47,17 @@ export type LockedMeetingType = {
   location?: string;
   description?: string;
   questions?: MeetingTypeQuestion[];
+  /** Nullable FK to a saved UserLocation (G5). When set, it pre-selects
+   * the matching entry in the host_locations picker (if present), or falls
+   * back to showing the free-form input prefilled with the address. */
+  default_location?: { id: number; name: string; address: string } | null;
+};
+
+export type HostLocation = {
+  id: number;
+  name: string;
+  address: string;
+  is_default: boolean;
 };
 
 export function BookingDialog({
@@ -63,6 +74,8 @@ export function BookingDialog({
   hostName,
   allowPhysical = false,
   lockedType = null,
+  hostLocations = [],
+  defaultKind = "online",
 }: {
   open: boolean;
   onClose: () => void;
@@ -87,6 +100,12 @@ export function BookingDialog({
    * type — no toggles, single-choice chip pickers, title auto-fills to
    * the type's name. Overrides `allowPhysical`. */
   lockedType?: LockedMeetingType | null;
+  /** Host's predefined in-person locations. When non-empty and kind is
+   * "physical", a picker is shown above the free-form address input. */
+  hostLocations?: HostLocation[];
+  /** Initial kind when the dialog opens in the generic (no-type) flow.
+   * Defaults to "online". Pass "physical" for in-person-only hosts. */
+  defaultKind?: BookingKind;
 }) {
   const [title, setTitle] = useState(defaultTitle);
   const [notes, setNotes] = useState("");
@@ -106,6 +125,10 @@ export function BookingDialog({
   // Honeypot — off-screen text field that legit users never see. Bots
   // that greedily fill every input trip it and get silently 204'd.
   const [hp, setHp] = useState("");
+  // Selected host location id, or "custom" when the visitor wants to type
+  // their own address. null means the picker hasn't been shown yet (no host
+  // locations, or not physical kind).
+  const [pickedLocationId, setPickedLocationId] = useState<number | "custom" | null>(null);
 
   // Only offer durations that actually fit the clicked free block, so the
   // user can't pick "2h" inside a 30-minute gap and hit a confusing error
@@ -150,8 +173,8 @@ export function BookingDialog({
     setNotes("");
     setVisitorName("");
     setVisitorEmail("");
-    setKind(lockedType?.kind ?? "online");
-    setLocation(lockedType?.location ?? "");
+    const initialKind = lockedType?.kind ?? defaultKind;
+    setKind(initialKind);
     setHp("");
     setShowNotes(false);
     setAnswers({});
@@ -162,7 +185,39 @@ export function BookingDialog({
         ?? intervalLenMin);
     setDurationMin(initialDuration);
     setStartMin(null);
-  }, [open, interval, defaultTitle, defaultDurationMin, intervalLenMin, lockedType]);
+
+    // Location picker default selection for physical kind.
+    // Priority:
+    //   1. lockedType.default_location FK — try to find it in hostLocations
+    //      to drive the radio/select picker; if not found (defensive), fall
+    //      back to the free-form input prefilled with the address.
+    //   2. lockedType.location string — free-form pre-fill (legacy / no FK).
+    //   3. host_locations default/first — pre-select the default saved loc.
+    //   4. Nothing — empty free-form.
+    if (lockedType?.default_location) {
+      const dl = lockedType.default_location;
+      const inList = hostLocations.find((l) => l.id === dl.id);
+      if (inList) {
+        setPickedLocationId(inList.id);
+        setLocation(inList.address);
+      } else {
+        // The saved location isn't in host_locations (shouldn't happen, but
+        // be defensive). Show the free-form input prefilled with the address.
+        setPickedLocationId(null);
+        setLocation(dl.address);
+      }
+    } else if (lockedType?.location) {
+      setLocation(lockedType.location);
+      setPickedLocationId(null);
+    } else if (hostLocations.length > 0) {
+      const defaultLoc = hostLocations.find((l) => l.is_default) ?? hostLocations[0];
+      setPickedLocationId(defaultLoc.id);
+      setLocation(defaultLoc.address);
+    } else {
+      setLocation("");
+      setPickedLocationId(null);
+    }
+  }, [open, interval, defaultTitle, defaultDurationMin, intervalLenMin, lockedType, hostLocations, defaultKind]);
 
   // If the current start becomes invalid (duration change shifts the last-
   // allowed start earlier), snap to the earliest still-valid option.
@@ -172,6 +227,23 @@ export function BookingDialog({
       setStartMin(startOptions[0]);
     }
   }, [open, interval, startOptions, startMin]);
+
+  // When kind transitions TO "physical", ensure pickedLocationId points to a
+  // valid host location (or "custom"). If it's stale (e.g. null or an id that
+  // no longer exists), snap to the host's default (or first) location.
+  // We do NOT reset when the user has explicitly chosen "custom" — that is a
+  // deliberate selection and should survive a round-trip online→physical.
+  useEffect(function syncPhysicalLocation() {
+    if (!open || kind !== "physical" || hostLocations.length === 0) return;
+    const isValidId = typeof pickedLocationId === "number" && hostLocations.some((l) => l.id === pickedLocationId);
+    if (!isValidId && pickedLocationId !== "custom") {
+      const defaultLoc = hostLocations.find((l) => l.is_default) ?? hostLocations[0];
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPickedLocationId(defaultLoc.id);
+      setLocation(defaultLoc.address);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, hostLocations]);
 
   useEffect(() => {
     if (!open) return;
@@ -328,15 +400,108 @@ export function BookingDialog({
             </fieldset>
           )}
 
-          {kind === "physical" && (
+          {kind === "physical" && hostLocations.length > 0 && (
             <div className="space-y-1">
-              <MicroLabel htmlFor="location">Where</MicroLabel>
+              <MicroLabel id="pick-location-label">Pick a location</MicroLabel>
+              {hostLocations.length <= 3 ? (
+                // Radio list for 1–3 locations.
+                <div role="radiogroup" aria-labelledby="pick-location-label" className="space-y-1.5">
+                  {hostLocations.map((loc) => (
+                    <label
+                      key={loc.id}
+                      className={
+                        "flex cursor-pointer items-start gap-2.5 rounded-lg border p-2.5 text-sm transition-colors " +
+                        (pickedLocationId === loc.id
+                          ? "border-amber-500 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/30"
+                          : "border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600")
+                      }
+                    >
+                      <input
+                        type="radio"
+                        name="host_location"
+                        value={loc.id}
+                        checked={pickedLocationId === loc.id}
+                        onChange={() => {
+                          setPickedLocationId(loc.id);
+                          setLocation(loc.address);
+                        }}
+                        className="mt-0.5 accent-amber-600 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium text-zinc-900 dark:text-zinc-50">
+                          {loc.name}
+                        </div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
+                          {loc.address}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                  <label
+                    className={
+                      "flex cursor-pointer items-center gap-2.5 rounded-lg border p-2.5 text-sm transition-colors " +
+                      (pickedLocationId === "custom"
+                        ? "border-amber-500 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/30"
+                        : "border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600")
+                    }
+                  >
+                    <input
+                      type="radio"
+                      name="host_location"
+                      value="custom"
+                      checked={pickedLocationId === "custom"}
+                      onChange={() => {
+                        setPickedLocationId("custom");
+                        setLocation("");
+                      }}
+                      className="accent-amber-600 shrink-0"
+                    />
+                    <span className="text-zinc-600 dark:text-zinc-400">Enter a different address</span>
+                  </label>
+                </div>
+              ) : (
+                // Select dropdown for 4+ locations.
+                <select
+                  value={pickedLocationId ?? ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === "custom") {
+                      setPickedLocationId("custom");
+                      setLocation("");
+                    } else {
+                      const id = Number(val);
+                      const found = hostLocations.find((l) => l.id === id);
+                      setPickedLocationId(id);
+                      if (found) setLocation(found.address);
+                    }
+                  }}
+                  className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+                >
+                  {hostLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.name} — {loc.address}
+                    </option>
+                  ))}
+                  <option value="custom">Enter a different address…</option>
+                </select>
+              )}
+            </div>
+          )}
+
+          {kind === "physical" && (hostLocations.length === 0 || pickedLocationId === "custom") && (
+            <div className="space-y-1">
+              <MicroLabel htmlFor="location">
+                {hostLocations.length > 0 ? "Your address" : "Where"}
+              </MicroLabel>
               <AddressAutocomplete
                 id="location"
                 value={location}
-                onChange={setLocation}
+                onChange={(v) => {
+                  setLocation(v);
+                }}
                 placeholder="Address, café, meeting room…"
                 required
+                autoFocus={pickedLocationId === "custom"}
               />
             </div>
           )}
@@ -640,10 +805,11 @@ function QuestionField({
 /** Micro uppercase label — same info as `<Label>` at a fraction of the
  * vertical footprint. Used inside the dialog to squeeze rows on mobile
  * without hiding what the field means. */
-function MicroLabel({ htmlFor, children }: { htmlFor?: string; children: React.ReactNode }) {
+function MicroLabel({ htmlFor, id, children }: { htmlFor?: string; id?: string; children: React.ReactNode }) {
   return (
     <label
       htmlFor={htmlFor}
+      id={id}
       className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400"
     >
       {children}

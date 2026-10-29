@@ -31,6 +31,8 @@ export type Me = {
   avatar_url: string | null;
   buffer_before_min: number;
   buffer_after_min: number;
+  accepts_google_bookings: boolean;
+  accepts_microsoft_bookings: boolean;
 };
 
 export type MePatch = Partial<
@@ -44,6 +46,8 @@ export type MePatch = Partial<
     | "share_enabled"
     | "buffer_before_min"
     | "buffer_after_min"
+    | "accepts_google_bookings"
+    | "accepts_microsoft_bookings"
   >
 >;
 

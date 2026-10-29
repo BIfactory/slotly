@@ -15,7 +15,50 @@ import uuid
 
 from django.conf import settings
 from django.db import models
-from django.db.models import CheckConstraint, Q, UniqueConstraint
+from django.db.models import CheckConstraint, Index, Q, UniqueConstraint
+
+
+class UserLocation(models.Model):
+    """Named location predefined by a user, e.g. "Kavárna U Fialek, Praha 2".
+
+    Users build a list of locations in /settings/locations and then pick one
+    when configuring a MeetingType (physical kind) or overriding the default on
+    the public booking page. The list is personal — two users may have
+    identically-named locations without conflict.
+
+    ``is_default`` flags the location Slotly should pre-select in pickers;
+    the "at most one default per user" invariant is enforced at the endpoint
+    layer (G2), not here.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="locations",
+    )
+    name = models.CharField(max_length=100)        # "Kavárna U Fialek"
+    address = models.CharField(max_length=400)      # "Vinohradská 42, Praha 2"
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "name"],
+                name="unique_location_name_per_user",
+            ),
+        ]
+        indexes = [Index(fields=["user", "is_default"], name="sched_uloc_user_is_default_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.user_id})"
+
+
+# Maximum number of saved locations per user. Shared constant used by the
+# CRUD view (scheduling) and the public profile view (accounts) so both caps
+# stay in sync without a second hard-coded literal.
+USER_LOCATION_CAP = 20
 
 
 class GoogleAccount(models.Model):
@@ -124,6 +167,20 @@ class MeetingType(models.Model):
     # typically a "thank you" page on the host's own site (Calendly-style
     # conversion tracking). Empty = show the inline success block instead.
     redirect_url = models.URLField(max_length=2000, blank=True)
+
+    # Optional FK to a UserLocation the host has saved — the canonical way to
+    # pre-select a location when this meeting type is physical. If the
+    # referenced UserLocation is later deleted, the FK goes NULL (SET_NULL)
+    # but the free-form `location` CharField above is left intact as a
+    # fallback. The two fields are independent: `default_location` is the
+    # "structured" reference; `location` is the "free text" fallback.
+    default_location = models.ForeignKey(
+        "UserLocation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
 
     # Host's preferred video-link mode for bookings on this meeting type.
     # Defaults to "auto" — the provider's built-in video link is used as-is.

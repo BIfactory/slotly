@@ -13,6 +13,12 @@ export type MeetingTypeQuestion = {
 
 export type MeetingLinkKind = "auto" | "google_meet" | "teams" | "none";
 
+export type LocationRef = {
+  id: number;
+  name: string;
+  address: string;
+};
+
 export type MeetingType = {
   id: number;
   name: string;
@@ -27,6 +33,9 @@ export type MeetingType = {
   questions: MeetingTypeQuestion[];
   redirect_url: string;
   meeting_link_kind: MeetingLinkKind;
+  /** Nullable FK to a saved UserLocation (G5). */
+  default_location_id: number | null;
+  default_location: LocationRef | null;
 };
 
 /** Trimmed shape the public profile endpoint returns — no id/is_active
@@ -41,6 +50,8 @@ export type PublicMeetingType = {
   color: string;
   questions: MeetingTypeQuestion[];
   redirect_url: string;
+  /** Nullable FK to a saved UserLocation (G5). */
+  default_location: LocationRef | null;
 };
 
 function csrfHeader(): Record<string, string> {
@@ -68,6 +79,8 @@ export type MeetingTypeInput = {
   questions?: MeetingTypeQuestion[];
   redirect_url?: string;
   meeting_link_kind?: MeetingLinkKind;
+  /** Nullable FK to a saved UserLocation (G5). */
+  default_location_id?: number | null;
 };
 
 export async function createMeetingType(input: MeetingTypeInput): Promise<MeetingType> {

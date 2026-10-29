@@ -20,6 +20,9 @@ from .views import (
     PublicBookingManageView,
     PublicBookingRescheduleView,
     PublicMeetingCreateView,
+    UserLocationDetailView,
+    UserLocationListCreateView,
+    UserLocationSetDefaultView,
     WritableCalendarsView,
     microsoft_oauth_callback,
     oauth_callback,
@@ -57,6 +60,14 @@ urlpatterns = [
         "calendar-accounts/<str:composite_id>/set-default",
         CalendarAccountSetDefaultView.as_view(),
         name="calendar-accounts-set-default",
+    ),
+    # G2 — user location CRUD
+    path("me/locations", UserLocationListCreateView.as_view(), name="me-locations"),
+    path("me/locations/<int:pk>", UserLocationDetailView.as_view(), name="me-location-detail"),
+    path(
+        "me/locations/<int:pk>/set-default",
+        UserLocationSetDefaultView.as_view(),
+        name="me-location-set-default",
     ),
     path("meeting-types", MeetingTypeListView.as_view(), name="meeting-types-list"),
     path(

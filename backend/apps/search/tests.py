@@ -159,6 +159,30 @@ class EngineTests(SimpleTestCase):
             ],
         )
 
+    # 7) regression: when a busy event ends at a non-grid time (14:43) the
+    #    *first slot* after it must start at the next grid boundary (14:45),
+    #    NOT at 14:43. This pins the _snap_up_to_grid invariant in the engine
+    #    so frontend consumers don't have to rely on raw interval boundaries.
+    def test_snap_up_aligns_first_slot_after_off_grid_busy(self) -> None:
+        # Busy: 13:00-14:43 → free window after busy is 14:43-17:00.
+        # First emitted slot must start at 14:45 (next 15-min grid after 14:43).
+        busy = [(_local(2026, 7, 6, 13, 0), _local(2026, 7, 6, 14, 43))]
+        one_day_end = _local(2026, 7, 7, 0, 0).astimezone(timezone.utc)
+        slots, _ = compute_slots(
+            working_hours_per_user={1: _wh_default()},
+            busy_per_user={1: busy},
+            user_ids=[1],
+            window_start=W_START,
+            window_end=one_day_end,
+            duration=timedelta(minutes=30),
+            tz=TZ,
+        )
+        # The first slot that falls after the busy block must start at 14:45,
+        # not 14:43 — proving _snap_up_to_grid rounds up correctly.
+        post_busy_starts = [s.start for s in slots if s.start >= _local(2026, 7, 6, 14, 0)]
+        self.assertTrue(len(post_busy_starts) > 0, "Expected slots after 14:00")
+        self.assertEqual(post_busy_starts[0], _local(2026, 7, 6, 14, 45))
+
     # 6) intersection of two users with different working hours yields the
     #    tighter window only.
     def test_intersection_tightens_window(self) -> None:

@@ -72,6 +72,8 @@ class MeSerializer(serializers.ModelSerializer):
             "avatar_url",
             "buffer_before_min",
             "buffer_after_min",
+            "accepts_google_bookings",
+            "accepts_microsoft_bookings",
         )
         read_only_fields = ("email", "share_token", "avatar_url")
 

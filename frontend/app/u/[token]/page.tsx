@@ -89,6 +89,39 @@ function PublicProfilePageInner() {
     return new Map(data.holidays.map((h) => [h.date, h.name]));
   }, [data]);
 
+  /** Providers the host has connected AND whose booking toggle is on. */
+  const activeOnlineProviders = useMemo(() => {
+    if (!data) return [] as ("google" | "microsoft")[];
+    const all = data.host_providers ?? [];
+    return all.filter((p) => {
+      if (p === "google") return data.accepts_google_bookings !== false;
+      if (p === "microsoft") return data.accepts_microsoft_bookings !== false;
+      return true;
+    });
+  }, [data]);
+
+  /** Host's predefined in-person locations (empty array when none). */
+  const hostLocations = useMemo(() => data?.host_locations ?? [], [data]);
+
+  /**
+   * True when the host has no active online providers but has at least one
+   * predefined location — the booking page should allow in-person-only
+   * bookings instead of showing a fully-degraded "not accepting" banner.
+   */
+  const inPersonOnly = useMemo(
+    () => activeOnlineProviders.length === 0 && hostLocations.length > 0,
+    [activeOnlineProviders, hostLocations],
+  );
+
+  /**
+   * True when there are no active online providers AND no predefined locations
+   * — the host is genuinely not accepting any kind of booking right now.
+   */
+  const fullyDegraded = useMemo(
+    () => activeOnlineProviders.length === 0 && hostLocations.length === 0,
+    [activeOnlineProviders, hostLocations],
+  );
+
   if (error === "not_found") {
     return (
       <main className="grid min-h-screen place-items-center bg-zinc-50 px-6 dark:bg-zinc-950">
@@ -170,7 +203,22 @@ function PublicProfilePageInner() {
       </header>
 
       <section className="mx-auto max-w-3xl px-6 py-8">
-        {data.booking_enabled === false && (
+        {fullyDegraded ? (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
+            <p className="font-medium">
+              This user is not currently accepting bookings — contact them directly.
+            </p>
+          </div>
+        ) : inPersonOnly ? (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
+            <p className="font-medium">
+              This user only accepts in-person bookings.
+            </p>
+            <p className="mt-1 text-amber-800 dark:text-amber-200/80">
+              Pick a slot to see available locations.
+            </p>
+          </div>
+        ) : data.booking_enabled === false ? (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
             <p className="font-medium">
               {display_name} isn&apos;t accepting direct bookings yet.
@@ -180,7 +228,7 @@ function PublicProfilePageInner() {
               another way to arrange a time.
             </p>
           </div>
-        )}
+        ) : null}
         {(data.meeting_types?.length ?? 0) > 0 && selectedType === null ? (
           // Landing: pick a meeting type first.
           <TypeList
@@ -203,7 +251,7 @@ function PublicProfilePageInner() {
                 Back to meeting types
               </button>
             )}
-            {(data.host_providers?.length ?? 0) >= 2 && (
+            {activeOnlineProviders.length >= 2 && (
               <fieldset className="mb-4 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
                 <legend className="px-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
                   Meeting link
@@ -240,7 +288,9 @@ function PublicProfilePageInner() {
               holidays={holidayMap}
               workingHoursRange={workingHoursRangeFromHours(data.profile.working_hours)}
               onIntervalClick={
-                data.booking_enabled === false
+                // Allow clicks when online booking is enabled OR when there are
+                // predefined in-person locations (in-person-only mode).
+                fullyDegraded
                   ? undefined
                   : (iv) => {
                       setBookingError(null);
@@ -260,9 +310,12 @@ function PublicProfilePageInner() {
         mode="public"
         hostName={display_name}
         defaultTitle={selectedType?.name ?? `Meeting with ${display_name}`}
-        // Only offer the Online/In-person toggle in the generic (no-type)
-        // flow. When a type is selected the kind is baked into it.
-        allowPhysical={selectedType === null}
+        // In-person-only: force physical kind and enable the physical UI.
+        // Generic flow: allow the toggle only when no type is selected.
+        // Locked-type flow: kind is baked in via lockedType.
+        allowPhysical={selectedType === null || inPersonOnly}
+        defaultKind={inPersonOnly ? "physical" : "online"}
+        hostLocations={hostLocations}
         lockedType={
           selectedType
             ? {
@@ -272,6 +325,7 @@ function PublicProfilePageInner() {
                 location: selectedType.location,
                 description: selectedType.description,
                 questions: selectedType.questions,
+                default_location: selectedType.default_location ?? null,
               }
             : null
         }
