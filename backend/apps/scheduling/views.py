@@ -21,6 +21,7 @@ from typing import Any
 
 from django.conf import settings
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
+from django.db import transaction
 from django.http import HttpRequest, HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from django.utils import timezone as djtz
@@ -882,57 +883,58 @@ class CalendarAccountDetailView(APIView):
         if account is None:
             return Response({"detail": "Account not found."}, status=404)
 
-        # Determine whether this account is the current default for its
-        # provider BEFORE deleting.  We must update WriteCalendarDefault
-        # BEFORE account.delete() so the FK promotion can see remaining
-        # accounts; also, if this account IS the WCD FK target, deleting it
-        # first would cascade-delete the WCD row and we would lose the other
-        # provider's FK.
-        default = WriteCalendarDefault.objects.filter(user=request.user).first()
-        is_this_provider_default = False
-        if default is not None:
-            if provider == "google" and default.google_account_id == account.pk:
-                is_this_provider_default = True
-            elif provider == "microsoft" and default.microsoft_account_id == account.pk:
-                is_this_provider_default = True
+        with transaction.atomic():
+            # Determine whether this account is the current default for its
+            # provider BEFORE deleting.  We must update WriteCalendarDefault
+            # BEFORE account.delete() so the FK promotion can see remaining
+            # accounts; also, if this account IS the WCD FK target, deleting it
+            # first would cascade-delete the WCD row and we would lose the other
+            # provider's FK.
+            default = WriteCalendarDefault.objects.filter(user=request.user).first()
+            is_this_provider_default = False
+            if default is not None:
+                if provider == "google" and default.google_account_id == account.pk:
+                    is_this_provider_default = True
+                elif provider == "microsoft" and default.microsoft_account_id == account.pk:
+                    is_this_provider_default = True
 
-        if is_this_provider_default and default is not None:
-            # Promote within the same provider: exclude the account being
-            # deleted, pick the next one by pk order.
-            if provider == "google":
-                next_same = (
-                    GoogleAccount.objects
-                    .filter(user=request.user)
-                    .exclude(pk=account.pk)
-                    .order_by("pk")
-                    .first()
-                )
-                default.google_account = next_same  # None if no other
-            else:  # microsoft
-                next_same = (
-                    MicrosoftAccount.objects
-                    .filter(user=request.user)
-                    .exclude(pk=account.pk)
-                    .order_by("pk")
-                    .first()
-                )
-                default.microsoft_account = next_same  # None if no other
-
-            # Persist or delete depending on whether the other FK is still
-            # set.  Both-null would violate the CheckConstraint.
-            if not default.has_default("google") and not default.has_default("microsoft"):
-                # After the update both FKs will be null — delete the row to
-                # satisfy the at-least-one constraint, then delete the account.
-                default.delete()
-            else:
+            if is_this_provider_default and default is not None:
+                # Promote within the same provider: exclude the account being
+                # deleted, pick the next one by pk order.
                 if provider == "google":
-                    default.save(update_fields=["google_account"])
-                else:
-                    default.save(update_fields=["microsoft_account"])
+                    next_same = (
+                        GoogleAccount.objects
+                        .filter(user=request.user)
+                        .exclude(pk=account.pk)
+                        .order_by("pk")
+                        .first()
+                    )
+                    default.google_account = next_same  # None if no other
+                else:  # microsoft
+                    next_same = (
+                        MicrosoftAccount.objects
+                        .filter(user=request.user)
+                        .exclude(pk=account.pk)
+                        .order_by("pk")
+                        .first()
+                    )
+                    default.microsoft_account = next_same  # None if no other
 
-        # Delete the account row.  If the WCD row was already updated/deleted
-        # above, the CASCADE on this FK will be a no-op.
-        account.delete()
+                # Persist or delete depending on whether the other FK is still
+                # set.  Both-null would violate the CheckConstraint.
+                if not default.has_default("google") and not default.has_default("microsoft"):
+                    # After the update both FKs will be null — delete the row to
+                    # satisfy the at-least-one constraint, then delete the account.
+                    default.delete()
+                else:
+                    if provider == "google":
+                        default.save(update_fields=["google_account"])
+                    else:
+                        default.save(update_fields=["microsoft_account"])
+
+            # Delete the account row.  If the WCD row was already updated/deleted
+            # above, the CASCADE on this FK will be a no-op.
+            account.delete()
 
         return Response(status=204)
 
