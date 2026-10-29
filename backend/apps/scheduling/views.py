@@ -1691,7 +1691,7 @@ class MeetingTypeListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request: Request) -> Response:
-        rows = MeetingType.objects.filter(host=request.user).order_by("display_order", "id")
+        rows = MeetingType.objects.filter(host=request.user).select_related("default_location").order_by("display_order", "id")
         return Response({"types": [_serialize_meeting_type(t) for t in rows]})
 
     def post(self, request: Request) -> Response:
@@ -1699,6 +1699,7 @@ class MeetingTypeListView(APIView):
         if err is not None:
             return Response(err, status=400)
         t = MeetingType.objects.create(host=request.user, **cleaned)
+        t = MeetingType.objects.select_related("default_location").get(pk=t.pk)
         return Response(_serialize_meeting_type(t), status=201)
 
 
@@ -1716,6 +1717,9 @@ class MeetingTypeDetailView(APIView):
         for field, value in cleaned.items():
             setattr(t, field, value)
         t.save()
+        # Re-fetch with select_related so _serialize_meeting_type can read
+        # the nested default_location without an extra lazy query per call.
+        t = MeetingType.objects.select_related("default_location").get(pk=t.pk)
         return Response(_serialize_meeting_type(t))
 
     def delete(self, request: Request, pk: int) -> Response:
@@ -1726,6 +1730,15 @@ class MeetingTypeDetailView(APIView):
 
 
 def _serialize_meeting_type(t: MeetingType) -> dict:
+    # Build the nested default_location representation.
+    dl = None
+    if t.default_location_id is not None:
+        try:
+            loc = t.default_location
+        except Exception:  # noqa: BLE001 — guard against deferred attr errors
+            loc = None
+        if loc is not None:
+            dl = {"id": loc.pk, "name": loc.name, "address": loc.address}
     return {
         "id": t.pk,
         "name": t.name,
@@ -1740,6 +1753,8 @@ def _serialize_meeting_type(t: MeetingType) -> dict:
         "questions": list(t.questions or []),
         "redirect_url": t.redirect_url,
         "meeting_link_kind": t.meeting_link_kind,
+        "default_location_id": t.default_location_id,
+        "default_location": dl,
     }
 
 
@@ -1844,6 +1859,20 @@ def _validate_meeting_type_payload(
         if mlk not in MeetingLinkKind.values:
             return {}, {"meeting_link_kind": "invalid"}
         cleaned["meeting_link_kind"] = mlk
+
+    if "default_location_id" in body:
+        raw_dlid = _get("default_location_id")
+        if raw_dlid is None:
+            cleaned["default_location_id"] = None
+        else:
+            try:
+                dlid = int(raw_dlid)
+            except (TypeError, ValueError):
+                return {}, {"default_location_id": ["Location not found."]}
+            from .models import UserLocation
+            if not UserLocation.objects.filter(pk=dlid, user=host).exists():
+                return {}, {"default_location_id": ["Location not found."]}
+            cleaned["default_location_id"] = dlid
 
     if "questions" in body:
         raw_questions = _get("questions") or []

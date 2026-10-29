@@ -374,14 +374,32 @@ class PublicProfileView(APIView):
         # the host hasn't defined any — /u/<token> falls back to the
         # generic "pick any free time" flow.
         from apps.scheduling.models import MeetingType as _MT
-        types = list(
+        _mt_qs = (
             _MT.objects.filter(host=user, is_active=True)
+            .select_related("default_location")
             .order_by("display_order", "id")
-            .values(
-                "slug", "name", "description", "duration_min",
-                "kind", "location", "color", "questions", "redirect_url",
-            )
         )
+        types = []
+        for _mt in _mt_qs:
+            _dl = None
+            if _mt.default_location_id is not None and _mt.default_location is not None:
+                _dl = {
+                    "id": _mt.default_location.pk,
+                    "name": _mt.default_location.name,
+                    "address": _mt.default_location.address,
+                }
+            types.append({
+                "slug": _mt.slug,
+                "name": _mt.name,
+                "description": _mt.description,
+                "duration_min": _mt.duration_min,
+                "kind": _mt.kind,
+                "location": _mt.location,
+                "color": _mt.color,
+                "questions": _mt.questions,
+                "redirect_url": _mt.redirect_url,
+                "default_location": _dl,
+            })
         # Build sorted host_providers list so the frontend knows which OAuth
         # providers the host has connected (drives the meeting-link selector).
         from apps.scheduling.models import GoogleAccount as _GA, MicrosoftAccount as _MA, UserLocation as _UL

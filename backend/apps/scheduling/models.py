@@ -162,6 +162,20 @@ class MeetingType(models.Model):
     # conversion tracking). Empty = show the inline success block instead.
     redirect_url = models.URLField(max_length=2000, blank=True)
 
+    # Optional FK to a UserLocation the host has saved — the canonical way to
+    # pre-select a location when this meeting type is physical. If the
+    # referenced UserLocation is later deleted, the FK goes NULL (SET_NULL)
+    # but the free-form `location` CharField above is left intact as a
+    # fallback. The two fields are independent: `default_location` is the
+    # "structured" reference; `location` is the "free text" fallback.
+    default_location = models.ForeignKey(
+        "UserLocation",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
     # Host's preferred video-link mode for bookings on this meeting type.
     # Defaults to "auto" — the provider's built-in video link is used as-is.
     # Visitors landing on a booking page can override this at the Booking level

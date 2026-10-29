@@ -26,6 +26,7 @@ import {
   type MeetingType,
   type MeetingTypeQuestion,
 } from "@/lib/meeting-types";
+import { listLocations, type UserLocation } from "@/lib/locations";
 
 const DURATIONS = [15, 30, 45, 60, 90, 120, 180, 240];
 const PRESET_COLORS = ["#4f46e5", "#0ea5e9", "#059669", "#d97706", "#dc2626", "#7c3aed"];
@@ -34,6 +35,7 @@ export default function MeetingTypesPage() {
   const router = useRouter();
   const [email, setEmail] = useState<string>("");
   const [types, setTypes] = useState<MeetingType[] | null>(null);
+  const [locations, setLocations] = useState<UserLocation[]>([]);
   const [editing, setEditing] = useState<MeetingType | "new" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,7 +48,12 @@ export default function MeetingTypesPage() {
       }
       setEmail(session.data?.user?.email ?? "");
       try {
-        setTypes(await listMeetingTypes());
+        const [loadedTypes, loadedLocations] = await Promise.all([
+          listMeetingTypes(),
+          listLocations(),
+        ]);
+        setTypes(loadedTypes);
+        setLocations(loadedLocations);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Couldn't load meeting types");
       }
@@ -190,6 +197,7 @@ export default function MeetingTypesPage() {
         {editing !== null && (
           <EditorModal
             initial={editing === "new" ? null : editing}
+            locations={locations}
             onClose={() => setEditing(null)}
             onSaved={(saved, isNew) => {
               setEditing(null);
@@ -210,10 +218,12 @@ export default function MeetingTypesPage() {
 
 function EditorModal({
   initial,
+  locations,
   onClose,
   onSaved,
 }: {
   initial: MeetingType | null;
+  locations: UserLocation[];
   onClose: () => void;
   onSaved: (saved: MeetingType, isNew: boolean) => void;
 }) {
@@ -227,6 +237,11 @@ function EditorModal({
   const [questions, setQuestions] = useState<MeetingTypeQuestion[]>(initial?.questions ?? []);
   const [redirectUrl, setRedirectUrl] = useState(initial?.redirect_url ?? "");
   const [meetingLinkKind, setMeetingLinkKind] = useState<MeetingLinkKind>(initial?.meeting_link_kind ?? "auto");
+  // default_location_id: the selected saved location, or null for free-form.
+  // Initialise from the existing type's FK if editing.
+  const [defaultLocationId, setDefaultLocationId] = useState<number | null>(
+    initial?.default_location_id ?? null,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -258,13 +273,16 @@ function EditorModal({
         duration_min: duration,
         kind,
         description: description.trim(),
-        location: kind === "physical" ? location.trim() : "",
+        // When a saved location is selected, send empty string for the
+        // free-form field; the FK is the canonical source of truth.
+        location: kind === "physical" && defaultLocationId === null ? location.trim() : "",
         color,
         questions: questions
           .map((q) => ({ ...q, label: q.label.trim() }))
           .filter((q) => q.label.length > 0),
         redirect_url: redirectUrl.trim(),
         meeting_link_kind: meetingLinkKind,
+        default_location_id: kind === "physical" ? defaultLocationId : null,
       };
       const saved = isNew
         ? await createMeetingType(payload)
@@ -325,17 +343,48 @@ function EditorModal({
         </fieldset>
 
         {kind === "physical" && (
-          <div className="space-y-1">
-            <Label htmlFor="mt-location">Default location</Label>
-            <Input
-              id="mt-location"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="Café at Slavín, Petřín, Prague…"
-              maxLength={300}
-            />
+          <div className="space-y-2">
+            <Label>Default location</Label>
+            {locations.length > 0 && (
+              <select
+                value={defaultLocationId === null ? "custom" : String(defaultLocationId)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === "custom") {
+                    setDefaultLocationId(null);
+                  } else {
+                    const id = Number(val);
+                    setDefaultLocationId(id);
+                    const found = locations.find((l) => l.id === id);
+                    if (found) setLocation(found.address);
+                  }
+                }}
+                className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+              >
+                {locations.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name} — {l.address}
+                  </option>
+                ))}
+                <option value="custom">Enter a different location…</option>
+              </select>
+            )}
+            {(locations.length === 0 || defaultLocationId === null) && (
+              <div className="space-y-1">
+                <Input
+                  id="mt-location"
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  placeholder="Café at Slavín, Petřín, Prague…"
+                  maxLength={300}
+                />
+              </div>
+            )}
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
               Visitors can override this when booking if the exact spot varies.
+              {locations.length === 0 && (
+                <> Save locations in <a href="/settings/locations" className="underline">Settings → Locations</a> for quick reuse.</>
+              )}
             </p>
           </div>
         )}

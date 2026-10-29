@@ -325,6 +325,7 @@ function PublicProfilePageInner() {
                 location: selectedType.location,
                 description: selectedType.description,
                 questions: selectedType.questions,
+                default_location: selectedType.default_location ?? null,
               }
             : null
         }

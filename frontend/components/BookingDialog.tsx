@@ -47,6 +47,10 @@ export type LockedMeetingType = {
   location?: string;
   description?: string;
   questions?: MeetingTypeQuestion[];
+  /** Nullable FK to a saved UserLocation (G5). When set, it pre-selects
+   * the matching entry in the host_locations picker (if present), or falls
+   * back to showing the free-form input prefilled with the address. */
+  default_location?: { id: number; name: string; address: string } | null;
 };
 
 export type HostLocation = {
@@ -183,10 +187,26 @@ export function BookingDialog({
     setStartMin(null);
 
     // Location picker default selection for physical kind.
-    // When the dialog is locked to a specific type that has a location, that
-    // location wins. Otherwise, if there are host locations and the kind is
-    // physical (or could be physical), pre-select the default location.
-    if (lockedType?.location) {
+    // Priority:
+    //   1. lockedType.default_location FK — try to find it in hostLocations
+    //      to drive the radio/select picker; if not found (defensive), fall
+    //      back to the free-form input prefilled with the address.
+    //   2. lockedType.location string — free-form pre-fill (legacy / no FK).
+    //   3. host_locations default/first — pre-select the default saved loc.
+    //   4. Nothing — empty free-form.
+    if (lockedType?.default_location) {
+      const dl = lockedType.default_location;
+      const inList = hostLocations.find((l) => l.id === dl.id);
+      if (inList) {
+        setPickedLocationId(inList.id);
+        setLocation(inList.address);
+      } else {
+        // The saved location isn't in host_locations (shouldn't happen, but
+        // be defensive). Show the free-form input prefilled with the address.
+        setPickedLocationId(null);
+        setLocation(dl.address);
+      }
+    } else if (lockedType?.location) {
       setLocation(lockedType.location);
       setPickedLocationId(null);
     } else if (hostLocations.length > 0) {
