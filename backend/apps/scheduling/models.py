@@ -439,7 +439,12 @@ class WriteCalendarDefault(models.Model):
         return self.selected_account.write_calendar_id
 
     def __str__(self) -> str:
-        return f"WriteCalendarDefault(user={self.user_id}, provider={self.provider})"
+        providers = []
+        if self.google_account_id is not None:
+            providers.append("google")
+        if self.microsoft_account_id is not None:
+            providers.append("microsoft")
+        return f"WriteCalendarDefault(user={self.user_id}, providers={'+'.join(providers) or 'none'})"
 
 
 class OAuthBusyWindow(models.Model):
