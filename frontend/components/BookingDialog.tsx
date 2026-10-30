@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { MapPin, Video, X as XIcon } from "lucide-react";
 import { AddressAutocomplete } from "@/components/AddressAutocomplete";
 import { Button, FormError, Input } from "@/components/ui";
+import { T, type Locale } from "@/lib/i18n";
 import type { MeetingTypeQuestion } from "@/lib/meeting-types";
 
 export type BookingKind = "online" | "physical";
@@ -76,6 +77,7 @@ export function BookingDialog({
   lockedType = null,
   hostLocations = [],
   defaultKind = "online",
+  locale = "en",
 }: {
   open: boolean;
   onClose: () => void;
@@ -106,7 +108,11 @@ export function BookingDialog({
   /** Initial kind when the dialog opens in the generic (no-type) flow.
    * Defaults to "online". Pass "physical" for in-person-only hosts. */
   defaultKind?: BookingKind;
+  /** Visitor-selected language for public flows. Authed callers can omit;
+   * default English matches the rest of the authed app. */
+  locale?: Locale;
 }) {
+  const t = T[locale];
   const [title, setTitle] = useState(defaultTitle);
   const [notes, setNotes] = useState("");
   const [durationMin, setDurationMin] = useState(defaultDurationMin);
@@ -264,7 +270,8 @@ export function BookingDialog({
 
   if (!open || !interval) return null;
 
-  const dayLabel = interval.start.toLocaleDateString(undefined, {
+  const bcp47 = locale === "cs" ? "cs-CZ" : "en-US";
+  const dayLabel = interval.start.toLocaleDateString(bcp47, {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -314,7 +321,7 @@ export function BookingDialog({
       }}
       role="dialog"
       aria-modal="true"
-      aria-label={mode === "public" ? "Book a meeting" : "Create meeting"}
+      aria-label={mode === "public" ? t.dialogTitlePublic : t.dialogTitleAuthed}
     >
       <form
         onSubmit={handleSubmit}
@@ -326,9 +333,9 @@ export function BookingDialog({
             <h2 className="truncate text-[15px] font-semibold text-zinc-900 dark:text-zinc-50 sm:text-base">
               {mode === "public"
                 ? hostName
-                  ? `Book with ${hostName}`
-                  : "Book a meeting"
-                : "New meeting"}
+                  ? t.dialogTitlePublicWith(hostName)
+                  : t.dialogTitlePublic
+                : t.dialogTitleAuthed}
             </h2>
             <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400 sm:text-xs">
               {dayLabel}
@@ -339,7 +346,7 @@ export function BookingDialog({
             onClick={onClose}
             disabled={submitting}
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-            aria-label="Close"
+            aria-label={t.cancelAction}
           >
             <XIcon size={18} aria-hidden />
           </button>
@@ -377,23 +384,24 @@ export function BookingDialog({
             </div>
           ) : allowPhysical && (
             <fieldset>
-              <legend className="sr-only">Meeting type</legend>
+              <legend className="sr-only">{t.dialogTitlePublic}</legend>
               <div className="grid grid-cols-2 gap-2">
                 <KindTile
                   active={kind === "online"}
                   onClick={() => setKind("online")}
                   icon={<Video size={14} aria-hidden />}
-                  title="Online"
-                  sub="Books now · meeting link"
+                  title={t.tileOnline}
+                  sub={t.tileOnlineSub}
                   tone="indigo"
                   recommended
+                  recommendedLabel={t.recommended}
                 />
                 <KindTile
                   active={kind === "physical"}
                   onClick={() => setKind("physical")}
                   icon={<MapPin size={14} aria-hidden />}
-                  title="In person"
-                  sub="Needs host approval"
+                  title={t.tilePhysical}
+                  sub={t.tilePhysicalSub}
                   tone="amber"
                 />
               </div>
@@ -402,7 +410,7 @@ export function BookingDialog({
 
           {kind === "physical" && hostLocations.length > 0 && (
             <div className="space-y-1">
-              <MicroLabel id="pick-location-label">Pick a location</MicroLabel>
+              <MicroLabel id="pick-location-label">{t.pickLocation}</MicroLabel>
               {hostLocations.length <= 3 ? (
                 // Radio list for 1–3 locations.
                 <div role="radiogroup" aria-labelledby="pick-location-label" className="space-y-1.5">
@@ -456,7 +464,7 @@ export function BookingDialog({
                       }}
                       className="accent-amber-600 shrink-0"
                     />
-                    <span className="text-zinc-600 dark:text-zinc-400">Enter a different address</span>
+                    <span className="text-zinc-600 dark:text-zinc-400">{t.enterDifferentAddress}</span>
                   </label>
                 </div>
               ) : (
@@ -482,7 +490,7 @@ export function BookingDialog({
                       {loc.name} — {loc.address}
                     </option>
                   ))}
-                  <option value="custom">Enter a different address…</option>
+                  <option value="custom">{t.enterDifferentAddressSelect}</option>
                 </select>
               )}
             </div>
@@ -491,7 +499,7 @@ export function BookingDialog({
           {kind === "physical" && (hostLocations.length === 0 || pickedLocationId === "custom") && (
             <div className="space-y-1">
               <MicroLabel htmlFor="location">
-                {hostLocations.length > 0 ? "Your address" : "Where"}
+                {hostLocations.length > 0 ? t.yourAddress : t.whereLabel}
               </MicroLabel>
               <AddressAutocomplete
                 id="location"
@@ -499,7 +507,7 @@ export function BookingDialog({
                 onChange={(v) => {
                   setLocation(v);
                 }}
-                placeholder="Address, café, meeting room…"
+                placeholder={t.addressPlaceholder}
                 required
                 autoFocus={pickedLocationId === "custom"}
               />
@@ -508,7 +516,7 @@ export function BookingDialog({
 
           <div className="space-y-2">
             <div className="space-y-1">
-              <MicroLabel htmlFor="duration-group">Duration</MicroLabel>
+              <MicroLabel htmlFor="duration-group">{t.durationLabel}</MicroLabel>
               <ChipRow>
                 {durationOptions.map((d) => (
                   <ChipButton
@@ -521,17 +529,16 @@ export function BookingDialog({
               </ChipRow>
               {durationOptions.length === 1 && durationOptions[0] < 30 && (
                 <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                  Only {formatDuration(durationOptions[0])} fits this free
-                  block — pick another day for a longer slot.
+                  {t.onlyFitsHint(formatDuration(durationOptions[0]))}
                 </p>
               )}
             </div>
 
             <div className="space-y-1">
-              <MicroLabel htmlFor="start-group">Start</MicroLabel>
+              <MicroLabel htmlFor="start-group">{t.startLabel}</MicroLabel>
               {startOptions.length === 0 ? (
                 <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
-                  No start time fits the picked duration. Try a shorter one.
+                  {t.noStartFits}
                 </p>
               ) : startOptions.length <= CHIP_LIMIT ? (
                 <ChipRow>
@@ -564,7 +571,7 @@ export function BookingDialog({
           {mode === "public" && (
             <div className="grid grid-cols-2 gap-2 border-t border-zinc-100 pt-3 sm:gap-3 sm:pt-4 dark:border-zinc-800">
               <div className="space-y-1">
-                <MicroLabel htmlFor="visitor-name">Your name</MicroLabel>
+                <MicroLabel htmlFor="visitor-name">{t.yourName}</MicroLabel>
                 <Input
                   id="visitor-name"
                   value={visitorName}
@@ -574,7 +581,7 @@ export function BookingDialog({
                 />
               </div>
               <div className="space-y-1">
-                <MicroLabel htmlFor="visitor-email">Your email</MicroLabel>
+                <MicroLabel htmlFor="visitor-email">{t.yourEmail}</MicroLabel>
                 <Input
                   id="visitor-email"
                   type="email"
@@ -608,11 +615,12 @@ export function BookingDialog({
               question={q}
               value={answers[q.id] ?? ""}
               onChange={(v) => setAnswers((prev) => ({ ...prev, [q.id]: v }))}
+              pickOneLabel={t.pickOneOption}
             />
           ))}
 
           <div className="space-y-1">
-            <MicroLabel htmlFor="title">Title</MicroLabel>
+            <MicroLabel htmlFor="title">{t.titleLabel}</MicroLabel>
             <Input
               id="title"
               value={title}
@@ -624,7 +632,7 @@ export function BookingDialog({
 
           {showNotes ? (
             <div className="space-y-1">
-              <MicroLabel htmlFor="notes">Notes</MicroLabel>
+              <MicroLabel htmlFor="notes">{t.notesLabel}</MicroLabel>
               <textarea
                 id="notes"
                 value={notes}
@@ -634,8 +642,8 @@ export function BookingDialog({
                 autoFocus
                 placeholder={
                   kind === "physical"
-                    ? "Anything the host should know?"
-                    : "Agenda, links, context…"
+                    ? t.notesPlaceholderPhysical
+                    : t.notesPlaceholderOnline
                 }
                 className="w-full resize-y rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm placeholder:text-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:placeholder:text-zinc-500"
               />
@@ -646,7 +654,7 @@ export function BookingDialog({
               onClick={() => setShowNotes(true)}
               className="text-xs font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
             >
-              + Add a note
+              {t.addNote}
             </button>
           )}
 
@@ -671,7 +679,7 @@ export function BookingDialog({
             disabled={submitting}
             className="w-auto px-4"
           >
-            Cancel
+            {t.cancelAction}
           </Button>
           <Button
             type="submit"
@@ -684,8 +692,8 @@ export function BookingDialog({
             }
           >
             {submitting
-              ? kind === "physical" ? "Sending…" : "Booking…"
-              : kind === "physical" ? "Send request" : "Book"}
+              ? kind === "physical" ? t.sending : t.bookingInProgress
+              : kind === "physical" ? t.sendRequestAction : t.bookAction}
           </Button>
         </footer>
       </form>
@@ -701,6 +709,7 @@ function KindTile({
   sub,
   tone,
   recommended = false,
+  recommendedLabel = "Recommended",
 }: {
   active: boolean;
   onClick: () => void;
@@ -709,6 +718,7 @@ function KindTile({
   sub: string;
   tone: "indigo" | "amber";
   recommended?: boolean;
+  recommendedLabel?: string;
 }) {
   const activeClass =
     tone === "indigo"
@@ -735,7 +745,7 @@ function KindTile({
         {title}
         {recommended && (
           <span className="ml-auto hidden rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 sm:inline">
-            Recommended
+            {recommendedLabel}
           </span>
         )}
       </div>
@@ -752,10 +762,12 @@ function QuestionField({
   question,
   value,
   onChange,
+  pickOneLabel,
 }: {
   question: MeetingTypeQuestion;
   value: string;
   onChange: (v: string) => void;
+  pickOneLabel: string;
 }) {
   const inputId = `q-${question.id}`;
   return (
@@ -782,7 +794,7 @@ function QuestionField({
           required={question.required}
           className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm dark:border-zinc-800 dark:bg-zinc-950"
         >
-          <option value="">— pick one —</option>
+          <option value="">{pickOneLabel}</option>
           {(question.options ?? []).map((opt) => (
             <option key={opt} value={opt}>
               {opt}

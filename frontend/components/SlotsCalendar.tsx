@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
+import { T, type Locale } from "@/lib/i18n";
 import type { Slot } from "@/lib/search";
 
 const HOUR_PX = 48;          // pixel height of one hour row
@@ -31,12 +32,6 @@ export type UnavailabilityBlock = {
   is_all_day: boolean;
 };
 
-const VIEW_LABEL: Record<ViewDays, string> = {
-  1: "Day",
-  3: "3 days",
-  7: "Week",
-};
-
 function defaultViewForWidth(w: number): ViewDays {
   if (w < 640) return 1;
   if (w < 1024) return 3;
@@ -52,6 +47,7 @@ export function SlotsCalendar({
   onDeleteUnavailability,
   stickyView = false,
   onIntervalClick,
+  locale = "en",
 }: {
   slots: Slot[];
   durationMin: number;
@@ -80,7 +76,17 @@ export function SlotsCalendar({
    * window on that day (potentially many hours) — the receiver picks the
    * actual meeting sub-slot. */
   onIntervalClick?: (interval: { start: Date; end: Date }) => void;
+  /** Visitor language for the public booking pages. Omit on authed pages
+   * (defaults to English, matching the rest of the authed app). */
+  locale?: Locale;
 }) {
+  const tr = T[locale];
+  const bcp47 = locale === "cs" ? "cs-CZ" : "en-US";
+  const VIEW_LABEL: Record<ViewDays, string> = {
+    1: tr.viewDay,
+    3: tr.viewThreeDays,
+    7: tr.viewWeek,
+  };
   const intervalsByDay = useMemo(() => groupAndMerge(slots), [slots]);
   const blocksByDay = useMemo(
     () => unavailabilityByDay(unavailabilityBlocks ?? []),
@@ -176,7 +182,7 @@ export function SlotsCalendar({
 
   const isToday = sameDay(viewStart, startOfPeriod(new Date(), viewDays));
   const viewEnd = addDays(viewStart, viewDays - 1);
-  const rangeLabel = formatRange(viewStart, viewEnd, viewDays);
+  const rangeLabel = formatRange(viewStart, viewEnd, viewDays, bcp47);
   const isoWk = isoWeekNumber(viewStart);
 
   return (
@@ -189,7 +195,7 @@ export function SlotsCalendar({
           <button
             type="button"
             onClick={() => nudge(-1)}
-            aria-label={viewDays === 1 ? "Previous day" : viewDays === 3 ? "Previous 3 days" : "Previous week"}
+            aria-label={viewDays === 1 ? tr.previousDay : viewDays === 3 ? tr.previousThreeDays : tr.previousWeek}
             className="rounded-md border border-zinc-200 px-2.5 py-1 text-sm leading-none hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             ‹
@@ -200,12 +206,12 @@ export function SlotsCalendar({
             disabled={isToday}
             className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium hover:bg-zinc-50 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            Today
+            {tr.todayLabel}
           </button>
           <button
             type="button"
             onClick={() => nudge(1)}
-            aria-label={viewDays === 1 ? "Next day" : viewDays === 3 ? "Next 3 days" : "Next week"}
+            aria-label={viewDays === 1 ? tr.nextDay : viewDays === 3 ? tr.nextThreeDays : tr.nextWeek}
             className="rounded-md border border-zinc-200 px-2.5 py-1 text-sm leading-none hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             ›
@@ -241,7 +247,7 @@ export function SlotsCalendar({
         <h3 className="min-w-0 basis-full truncate text-sm font-medium text-zinc-900 dark:text-zinc-50 sm:basis-0 sm:flex-1 sm:text-right">
           {viewDays === 7 && (
             <>
-              Week {isoWk}
+              {tr.weekLabel(isoWk)}
               <span className="text-zinc-400"> · </span>
             </>
           )}
@@ -270,7 +276,7 @@ export function SlotsCalendar({
               title={holidayName ? `Public holiday: ${holidayName}` : undefined}
             >
               <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-                {day.toLocaleDateString(undefined, { weekday: "short" })}
+                {day.toLocaleDateString(bcp47, { weekday: "short" })}
               </div>
               <div
                 className={
@@ -280,7 +286,7 @@ export function SlotsCalendar({
                     : "text-zinc-700 dark:text-zinc-300")
                 }
               >
-                {day.toLocaleDateString(undefined, { day: "numeric", month: "short" })}
+                {day.toLocaleDateString(bcp47, { day: "numeric", month: "short" })}
               </div>
               {holidayName && (
                 <div className="mt-0.5 truncate text-[10px] font-medium text-amber-700 dark:text-amber-300">
@@ -399,8 +405,18 @@ export function SlotsCalendar({
                     style={{ top, height }}
                     title={
                       onIntervalClick
-                        ? `Free for a ${durationMin}-min meeting any time between ${formatHM(iv.start)} and ${formatHM(iv.end)}.\nLatest possible start: ${formatHM(new Date(iv.end.getTime() - durationMin * 60_000))}.\nClick to book.`
-                        : `Free for a ${durationMin}-min meeting any time between ${formatHM(iv.start)} and ${formatHM(iv.end)}.\nLatest possible start: ${formatHM(new Date(iv.end.getTime() - durationMin * 60_000))}.\nClick to copy.`
+                        ? tr.slotTooltipBookable(
+                            durationMin,
+                            formatHM(iv.start),
+                            formatHM(iv.end),
+                            formatHM(new Date(iv.end.getTime() - durationMin * 60_000)),
+                          )
+                        : tr.slotTooltipCopyable(
+                            durationMin,
+                            formatHM(iv.start),
+                            formatHM(iv.end),
+                            formatHM(new Date(iv.end.getTime() - durationMin * 60_000)),
+                          )
                     }
                     onClick={() => {
                       if (onIntervalClick) {
@@ -409,7 +425,9 @@ export function SlotsCalendar({
                       }
                       navigator.clipboard
                         ?.writeText(
-                          `${day.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}, ${formatHM(iv.start)}–${formatHM(iv.end)} free`,
+                          tr.freeIntervalTooltip(
+                            `${day.toLocaleDateString(bcp47, { weekday: "short", day: "numeric", month: "short" })}, ${formatHM(iv.start)}–${formatHM(iv.end)}`,
+                          ),
                         )
                         .catch(() => {});
                     }}
@@ -567,13 +585,13 @@ function isoWeekNumber(d: Date): number {
   return 1 + Math.floor(diffDays / 7);
 }
 
-function formatRange(start: Date, end: Date, viewDays: ViewDays): string {
+function formatRange(start: Date, end: Date, viewDays: ViewDays, bcp47: string = "en-US"): string {
   const day = (d: Date) => d.getDate();
-  const monthShort = (d: Date) => d.toLocaleDateString(undefined, { month: "short" });
+  const monthShort = (d: Date) => d.toLocaleDateString(bcp47, { month: "short" });
   const year = (d: Date) => d.getFullYear();
 
   if (viewDays === 1) {
-    return start.toLocaleDateString(undefined, {
+    return start.toLocaleDateString(bcp47, {
       weekday: "long",
       day: "numeric",
       month: "short",
