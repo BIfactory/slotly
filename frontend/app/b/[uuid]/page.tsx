@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, CalendarClock, CheckCircle2, MapPin, Video } from "lucide-react";
+import { LangSwitch } from "@/components/LangSwitch";
 import { Logo } from "@/components/Logo";
 import { SlotsCalendar } from "@/components/SlotsCalendar";
 import { Button, FormError, Label } from "@/components/ui";
@@ -25,11 +26,14 @@ import {
   rescheduleManagedBooking,
   type ManagedBooking,
 } from "@/lib/google";
+import { T, type Locale, useLocale } from "@/lib/i18n";
 import { computeFreeSlots, workingHoursRangeFromHours } from "@/lib/public-profile";
 
 export default function ManageBookingPage() {
   const params = useParams<{ uuid: string }>();
   const uuid = params.uuid;
+  const [locale, setLocale] = useLocale();
+  const t = T[locale];
 
   const [state, setState] = useState<
     "loading" | "not_found" | "load_error" | "loaded"
@@ -72,7 +76,7 @@ export default function ManageBookingPage() {
       setBooking(updated);
       setShowConfirm(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't cancel");
+      setError(err instanceof Error ? err.message : t.couldntCancel);
     } finally {
       setSubmitting(false);
     }
@@ -91,7 +95,7 @@ export default function ManageBookingPage() {
       setReschedulePick(null);
       setView("detail");
     } catch (err) {
-      setRescheduleError(err instanceof Error ? err.message : "Couldn't reschedule");
+      setRescheduleError(err instanceof Error ? err.message : t.couldntReschedule);
     } finally {
       setSubmitting(false);
     }
@@ -100,37 +104,38 @@ export default function ManageBookingPage() {
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <div className="border-b border-zinc-200 bg-white px-6 py-3 dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mx-auto flex max-w-2xl items-center justify-between">
-          <Link href="/" aria-label="Slotly home" className="inline-flex items-center">
+        <div className="mx-auto flex max-w-2xl items-center justify-between gap-3">
+          <Link href="/" aria-label="Slotly" className="inline-flex items-center">
             <Logo size={20} />
           </Link>
+          <LangSwitch locale={locale} onChange={setLocale} />
         </div>
       </div>
 
       <main className="mx-auto max-w-2xl px-6 py-10">
         {state === "loading" && (
-          <p className="text-sm text-zinc-500">Loading your booking…</p>
+          <p className="text-sm text-zinc-500">{t.loadingYourBooking}</p>
         )}
 
         {state === "not_found" && (
           <div className="rounded-xl border border-zinc-200 bg-white p-8 text-center dark:border-zinc-800 dark:bg-zinc-900">
             <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
-              Booking not found
+              {t.bookingNotFoundTitle}
             </h1>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-              This link doesn&apos;t match any booking. It may have been mistyped
-              or the booking was already deleted from the host&apos;s calendar.
+              {t.bookingNotFoundBody}
             </p>
           </div>
         )}
 
         {state === "load_error" && (
-          <FormError message="Couldn't load this booking. Try again in a minute." />
+          <FormError message={t.couldntLoadBooking} />
         )}
 
         {state === "loaded" && booking && view === "detail" && (
           <BookingCard
             booking={booking}
+            locale={locale}
             showConfirm={showConfirm}
             onOpenConfirm={() => setShowConfirm(true)}
             onCloseConfirm={() => {
@@ -153,6 +158,7 @@ export default function ManageBookingPage() {
         {state === "loaded" && booking && view === "reschedule" && (
           <ReschedulePanel
             booking={booking}
+            locale={locale}
             pick={reschedulePick}
             onPick={setReschedulePick}
             onSubmit={onReschedule}
@@ -172,6 +178,7 @@ export default function ManageBookingPage() {
 
 function BookingCard({
   booking,
+  locale,
   showConfirm,
   onOpenConfirm,
   onCloseConfirm,
@@ -183,6 +190,7 @@ function BookingCard({
   error,
 }: {
   booking: ManagedBooking;
+  locale: Locale;
   showConfirm: boolean;
   onOpenConfirm: () => void;
   onCloseConfirm: () => void;
@@ -193,9 +201,11 @@ function BookingCard({
   submitting: boolean;
   error: string | null;
 }) {
+  const t = T[locale];
+  const bcp47 = locale === "cs" ? "cs-CZ" : "en-US";
   const start = new Date(booking.start);
   const end = new Date(booking.end);
-  const dayLabel = start.toLocaleDateString(undefined, {
+  const dayLabel = start.toLocaleDateString(bcp47, {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -218,22 +228,22 @@ function BookingCard({
           </div>
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
-              {booking.title || `Meeting with ${booking.host_name}`}
+              {booking.title || t.meetingWith(booking.host_name)}
             </h1>
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              with {booking.host_name}
+              {t.bookingAttendeeWith(booking.host_name)}
             </p>
           </div>
-          <StatusPill status={booking.status} past={isPast && !isCancelled} />
+          <StatusPill status={booking.status} past={isPast && !isCancelled} locale={locale} />
         </div>
 
         <dl className="mt-6 space-y-3 border-t border-zinc-100 pt-5 text-sm dark:border-zinc-800">
-          <Row label="When" value={`${dayLabel} · ${timeLabel}`} />
+          <Row label={t.rowWhen} value={`${dayLabel} · ${timeLabel}`} />
           {booking.kind === "physical" && booking.location && (
-            <Row label="Where" value={booking.location} />
+            <Row label={t.rowWhere} value={booking.location} />
           )}
           <Row
-            label="Booked as"
+            label={t.rowBookedAs}
             value={
               booking.visitor_name
                 ? `${booking.visitor_name} <${booking.visitor_email}>`
@@ -246,16 +256,16 @@ function BookingCard({
           <div className="mt-6 flex items-start gap-2 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
             <CheckCircle2 size={16} className="mt-0.5 shrink-0" aria-hidden />
             <p>
-              This booking is cancelled
-              {booking.cancelled_at
-                ? ` (${new Date(booking.cancelled_at).toLocaleString()})`
-                : ""}
-              . The host has been notified.
+              {t.bookingCancelledTemplate(
+                booking.cancelled_at
+                  ? new Date(booking.cancelled_at).toLocaleString(bcp47)
+                  : null,
+              )}
             </p>
           </div>
         ) : isPast ? (
           <p className="mt-6 rounded-md bg-zinc-100 p-3 text-sm text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-            This booking has already ended.
+            {t.bookingAlreadyEnded}
           </p>
         ) : (
           <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -264,7 +274,7 @@ function BookingCard({
               onClick={onOpenConfirm}
               className="inline-flex items-center justify-center gap-1.5 rounded-md border border-red-200 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
             >
-              Cancel
+              {t.cancelBookingAction}
             </button>
             <button
               type="button"
@@ -272,7 +282,7 @@ function BookingCard({
               className="inline-flex items-center justify-center gap-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-200 dark:hover:bg-indigo-900/40"
             >
               <CalendarClock size={14} aria-hidden />
-              Reschedule
+              {t.rescheduleAction}
             </button>
           </div>
         )}
@@ -289,21 +299,20 @@ function BookingCard({
         >
           <div className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">
             <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
-              Cancel this booking?
+              {t.cancelConfirmTitle}
             </h2>
             <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              The calendar event will be removed and the host will be
-              notified. This can&apos;t be undone.
+              {t.cancelConfirmBody}
             </p>
             <div className="mt-4 space-y-1">
-              <Label htmlFor="cancel-reason">Reason (optional)</Label>
+              <Label htmlFor="cancel-reason">{t.cancelReasonLabel}</Label>
               <textarea
                 id="cancel-reason"
                 value={reason}
                 onChange={(e) => onReasonChange(e.target.value)}
                 rows={3}
                 maxLength={500}
-                placeholder="Let the host know if you'd like."
+                placeholder={t.cancelReasonPlaceholder}
                 className="w-full resize-y rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
               />
             </div>
@@ -316,7 +325,7 @@ function BookingCard({
                 disabled={submitting}
                 className="w-auto px-4"
               >
-                Keep it
+                {t.keepIt}
               </Button>
               <Button
                 type="button"
@@ -324,7 +333,7 @@ function BookingCard({
                 disabled={submitting}
                 className="w-auto px-5 !bg-red-600 hover:!bg-red-700 dark:!bg-red-600 dark:hover:!bg-red-700"
               >
-                {submitting ? "Cancelling…" : "Yes, cancel"}
+                {submitting ? t.cancelling : t.yesCancel}
               </Button>
             </div>
           </div>
@@ -336,6 +345,7 @@ function BookingCard({
 
 function ReschedulePanel({
   booking,
+  locale,
   pick,
   onPick,
   onSubmit,
@@ -344,6 +354,7 @@ function ReschedulePanel({
   error,
 }: {
   booking: ManagedBooking;
+  locale: Locale;
   pick: { start: Date; end: Date } | null;
   onPick: (iv: { start: Date; end: Date } | null) => void;
   onSubmit: () => void | Promise<void>;
@@ -351,6 +362,8 @@ function ReschedulePanel({
   submitting: boolean;
   error: string | null;
 }) {
+  const t = T[locale];
+  const bcp47 = locale === "cs" ? "cs-CZ" : "en-US";
   const availability = booking.availability;
   const durationMin = Math.round(
     (new Date(booking.end).getTime() - new Date(booking.start).getTime()) / 60_000,
@@ -379,25 +392,23 @@ function ReschedulePanel({
         className="inline-flex items-center gap-1.5 text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
       >
         <ArrowLeft size={14} aria-hidden />
-        Back to booking
+        {t.backToBooking}
       </button>
 
       <header>
         <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">
-          Pick a new time
+          {t.pickNewTime}
         </h1>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          {booking.host_name}&apos;s next 8 weeks. Click any free slot to
-          confirm the move — the old event will be removed and a new invite
-          sent for the new time.
+          {t.rescheduleHint(booking.host_name)}
         </p>
       </header>
 
       {!availability ? (
-        <FormError message="Couldn't load host availability." />
+        <FormError message={t.couldntLoadAvailability} />
       ) : slots.length === 0 ? (
         <div className="rounded-xl border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-          No free time in the upcoming weeks.
+          {t.noFreeTime}
         </div>
       ) : (
         <SlotsCalendar
@@ -405,6 +416,7 @@ function ReschedulePanel({
           durationMin={durationMin}
           holidays={holidays}
           workingHoursRange={workingHoursRangeFromHours(availability.working_hours)}
+          locale={locale}
           onIntervalClick={(iv) => {
             // Snap to first `durationMin` chunk of the clicked free interval.
             const start = new Date(iv.start);
@@ -426,23 +438,26 @@ function ReschedulePanel({
         >
           <div className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-2xl dark:border-zinc-800 dark:bg-zinc-900">
             <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
-              Move meeting?
+              {t.moveMeetingTitle}
             </h2>
             <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              Confirm the new time — {booking.host_name} will be notified and
-              the calendar event updated for everyone.
+              {t.moveMeetingBody(booking.host_name)}
             </p>
             <dl className="mt-4 space-y-2 text-sm">
               <div className="flex gap-3">
-                <dt className="w-16 text-xs uppercase tracking-wider text-zinc-500">Was</dt>
+                <dt className="w-16 text-xs uppercase tracking-wider text-zinc-500">
+                  {t.rowWas}
+                </dt>
                 <dd className="text-zinc-800 dark:text-zinc-100">
-                  {new Date(booking.start).toLocaleString()}
+                  {new Date(booking.start).toLocaleString(bcp47)}
                 </dd>
               </div>
               <div className="flex gap-3">
-                <dt className="w-16 text-xs uppercase tracking-wider text-zinc-500">Now</dt>
+                <dt className="w-16 text-xs uppercase tracking-wider text-zinc-500">
+                  {t.rowNow}
+                </dt>
                 <dd className="font-medium text-indigo-700 dark:text-indigo-300">
-                  {pick.start.toLocaleString()} – {fmt(pick.end)}
+                  {pick.start.toLocaleString(bcp47)} – {fmt(pick.end)}
                 </dd>
               </div>
             </dl>
@@ -455,7 +470,7 @@ function ReschedulePanel({
                 disabled={submitting}
                 className="w-auto px-4"
               >
-                Back
+                {t.backBtn}
               </Button>
               <Button
                 type="button"
@@ -463,7 +478,7 @@ function ReschedulePanel({
                 disabled={submitting}
                 className="w-auto px-5"
               >
-                {submitting ? "Moving…" : "Confirm move"}
+                {submitting ? t.moving : t.confirmMove}
               </Button>
             </div>
           </div>
@@ -503,27 +518,30 @@ function Row({ label, value }: { label: string; value: string }) {
 function StatusPill({
   status,
   past,
+  locale,
 }: {
   status: ManagedBooking["status"];
   past: boolean;
+  locale: Locale;
 }) {
+  const t = T[locale];
   if (status === "cancelled") {
     return (
       <span className="inline-flex items-center rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-        Cancelled
+        {t.statusCancelled}
       </span>
     );
   }
   if (past) {
     return (
       <span className="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-        Ended
+        {t.statusEnded}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
-      Confirmed
+      {t.statusConfirmed}
     </span>
   );
 }

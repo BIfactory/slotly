@@ -11,9 +11,11 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight, Globe, MapPin, Video } from "lucide-react";
 import { BookingDialog, type BookingSubmit } from "@/components/BookingDialog";
+import { LangSwitch } from "@/components/LangSwitch";
 import { Logo } from "@/components/Logo";
 import { SlotsCalendar } from "@/components/SlotsCalendar";
 import { createPublicMeeting } from "@/lib/google";
+import { T, useLocale } from "@/lib/i18n";
 import type { PublicMeetingType } from "@/lib/meeting-types";
 import {
   colorFromName,
@@ -27,7 +29,7 @@ import {
 
 export default function PublicProfilePage() {
   return (
-    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">Loading…</div>}>
+    <Suspense fallback={<div className="p-6 text-sm text-zinc-500" />}>
       <PublicProfilePageInner />
     </Suspense>
   );
@@ -39,6 +41,8 @@ function PublicProfilePageInner() {
   const router = useRouter();
   const token = params.token;
   const selectedSlug = searchParams?.get("type") ?? null;
+  const [locale, setLocale] = useLocale();
+  const t = T[locale];
 
   const [data, setData] = useState<PublicProfileResponse | null>(null);
   const [error, setError] = useState<"not_found" | "load" | null>(null);
@@ -127,10 +131,10 @@ function PublicProfilePageInner() {
       <main className="grid min-h-screen place-items-center bg-zinc-50 px-6 dark:bg-zinc-950">
         <div className="mx-auto max-w-md text-center">
           <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
-            Profile not found
+            {t.profileNotFound}
           </h1>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-            This link is invalid or no longer public.
+            {t.profileNotFoundHint}
           </p>
         </div>
       </main>
@@ -140,7 +144,7 @@ function PublicProfilePageInner() {
   if (!data) {
     return (
       <main className="grid min-h-screen place-items-center bg-zinc-50 dark:bg-zinc-950">
-        <div className="text-sm text-zinc-500">Loading…</div>
+        <div className="text-sm text-zinc-500">{t.loading}</div>
       </main>
     );
   }
@@ -154,20 +158,23 @@ function PublicProfilePageInner() {
       {/* Top brand bar — same Slotly mark as the authed app, so visitors know
           immediately whose service is showing them this page. */}
       <div className="border-b border-zinc-200 bg-white px-6 py-3 dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mx-auto flex max-w-3xl items-center justify-between">
+        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
           <Link
             href="/"
             className="inline-flex items-center text-sm hover:opacity-80"
-            aria-label="Slotly home"
+            aria-label="Slotly"
           >
             <Logo size={20} />
           </Link>
-          <Link
-            href="/auth/register"
-            className="text-xs font-medium text-zinc-500 hover:text-indigo-600 dark:text-zinc-400 dark:hover:text-indigo-400"
-          >
-            Get your own
-          </Link>
+          <div className="flex items-center gap-3">
+            <LangSwitch locale={locale} onChange={setLocale} />
+            <Link
+              href="/auth/register"
+              className="text-xs font-medium text-zinc-500 hover:text-indigo-600 dark:text-zinc-400 dark:hover:text-indigo-400"
+            >
+              {t.getYourOwn}
+            </Link>
+          </div>
         </div>
       </div>
       <header className="border-b border-zinc-200 bg-white py-10 dark:border-zinc-800 dark:bg-zinc-900">
@@ -194,9 +201,7 @@ function PublicProfilePageInner() {
             </h1>
             <p className="mt-1 flex items-center gap-1.5 text-sm text-zinc-500 dark:text-zinc-400">
               <Globe className="h-4 w-4" />
-              <span>{country}</span>
-              <span aria-hidden>·</span>
-              <span>Availability for the next 8 weeks</span>
+              <span>{t.countryAndWindow(country)}</span>
             </p>
           </div>
         </div>
@@ -205,27 +210,20 @@ function PublicProfilePageInner() {
       <section className="mx-auto max-w-3xl px-6 py-8">
         {fullyDegraded ? (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
-            <p className="font-medium">
-              This user is not currently accepting bookings — contact them directly.
-            </p>
+            <p className="font-medium">{t.notAcceptingBookings}</p>
           </div>
         ) : inPersonOnly ? (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
-            <p className="font-medium">
-              This user only accepts in-person bookings.
-            </p>
+            <p className="font-medium">{t.inPersonOnlyTitle}</p>
             <p className="mt-1 text-amber-800 dark:text-amber-200/80">
-              Pick a slot to see available locations.
+              {t.inPersonOnlyHint}
             </p>
           </div>
         ) : data.booking_enabled === false ? (
           <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
-            <p className="font-medium">
-              {display_name} isn&apos;t accepting direct bookings yet.
-            </p>
+            <p className="font-medium">{t.bookingsOffFor(display_name)}</p>
             <p className="mt-1 text-amber-800 dark:text-amber-200/80">
-              You can still see their availability below — reach out
-              another way to arrange a time.
+              {t.bookingsOffHint}
             </p>
           </div>
         ) : null}
@@ -234,10 +232,12 @@ function PublicProfilePageInner() {
           <TypeList
             types={data.meeting_types ?? []}
             onPick={(slug) => router.push(`?type=${encodeURIComponent(slug)}`)}
+            heading={t.pickAMeeting}
+            hint={t.pickAMeetingHint}
           />
         ) : slots.length === 0 ? (
           <div className="rounded-xl border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-            No free time in the upcoming weeks.
+            {t.noFreeTime}
           </div>
         ) : (
           <>
@@ -248,20 +248,20 @@ function PublicProfilePageInner() {
                 className="mb-3 inline-flex items-center gap-1.5 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
               >
                 <ArrowLeft size={12} aria-hidden />
-                Back to meeting types
+                {t.backToMeetingTypes}
               </button>
             )}
             {activeOnlineProviders.length >= 2 && (
               <fieldset className="mb-4 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
                 <legend className="px-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                  Meeting link
+                  {t.meetingLinkLabel}
                 </legend>
                 <div className="mt-2 flex flex-wrap gap-3">
                   {(
                     [
-                      { value: "auto", label: "Auto" },
-                      { value: "google_meet", label: "Google Meet" },
-                      { value: "teams", label: "Microsoft Teams" },
+                      { value: "auto", label: t.meetingLinkAuto },
+                      { value: "google_meet", label: t.meetingLinkGoogleMeet },
+                      { value: "teams", label: t.meetingLinkTeams },
                     ] as const
                   ).map(({ value, label }) => (
                     <label
@@ -287,6 +287,7 @@ function PublicProfilePageInner() {
               durationMin={selectedType?.duration_min ?? 30}
               holidays={holidayMap}
               workingHoursRange={workingHoursRangeFromHours(data.profile.working_hours)}
+              locale={locale}
               onIntervalClick={
                 // Allow clicks when online booking is enabled OR when there are
                 // predefined in-person locations (in-person-only mode).
@@ -308,8 +309,9 @@ function PublicProfilePageInner() {
         onClose={() => setBookingInterval(null)}
         interval={bookingInterval}
         mode="public"
+        locale={locale}
         hostName={display_name}
-        defaultTitle={selectedType?.name ?? `Meeting with ${display_name}`}
+        defaultTitle={selectedType?.name ?? t.meetingWith(display_name)}
         // In-person-only: force physical kind and enable the physical UI.
         // Generic flow: allow the toggle only when no type is selected.
         // Locked-type flow: kind is baked in via lockedType.
@@ -360,12 +362,7 @@ function PublicProfilePageInner() {
               return;
             }
             if ("pending" in result) {
-              setBookingSuccess(
-                <span>
-                  Request sent. {display_name} will confirm or decline —
-                  you&apos;ll get an email either way.
-                </span>,
-              );
+              setBookingSuccess(<span>{t.bookingRequestSent(display_name)}</span>);
             } else {
               // Confirmed online booking — surface the Meet/Teams join link
               // and the manage link inline so the visitor doesn't have to
@@ -374,7 +371,7 @@ function PublicProfilePageInner() {
               const manageUrl = result.manage_url;
               setBookingSuccess(
                 <div className="space-y-2">
-                  <p className="font-medium">Booked! Invite is on its way to your inbox.</p>
+                  <p className="font-medium">{t.bookingConfirmed}</p>
                   <div className="flex flex-wrap gap-2">
                     {meetLink && (
                       <a
@@ -383,7 +380,7 @@ function PublicProfilePageInner() {
                         rel="noreferrer"
                         className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
                       >
-                        Join meeting
+                        {t.joinMeeting}
                       </a>
                     )}
                     {manageUrl && (
@@ -393,7 +390,7 @@ function PublicProfilePageInner() {
                         rel="noreferrer"
                         className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100 dark:border-emerald-700 dark:text-emerald-200 dark:hover:bg-emerald-900/40"
                       >
-                        Manage booking
+                        {t.manageBooking}
                       </a>
                     )}
                   </div>
@@ -424,19 +421,21 @@ function PublicProfilePageInner() {
 function TypeList({
   types,
   onPick,
+  heading,
+  hint,
 }: {
   types: PublicMeetingType[];
   onPick: (slug: string) => void;
+  heading: string;
+  hint: string;
 }) {
   return (
     <section className="space-y-3">
       <header>
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-          Pick a meeting
+          {heading}
         </h2>
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Choose an option — the next step shows when we&apos;re both free.
-        </p>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">{hint}</p>
       </header>
       <ul className="space-y-2">
         {types.map((t) => (
