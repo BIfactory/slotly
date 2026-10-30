@@ -196,7 +196,7 @@ export function SlotsCalendar({
             type="button"
             onClick={() => nudge(-1)}
             aria-label={viewDays === 1 ? tr.previousDay : viewDays === 3 ? tr.previousThreeDays : tr.previousWeek}
-            className="rounded-md border border-zinc-200 px-2.5 py-1 text-sm leading-none hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-zinc-200 px-2.5 py-1 text-sm leading-none hover:bg-zinc-50 sm:min-h-0 sm:min-w-0 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             ‹
           </button>
@@ -204,7 +204,7 @@ export function SlotsCalendar({
             type="button"
             onClick={() => setViewStart(startOfPeriod(new Date(), viewDays))}
             disabled={isToday}
-            className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium hover:bg-zinc-50 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800"
+            className="inline-flex min-h-[44px] items-center rounded-md border border-zinc-200 px-3 py-1 text-xs font-medium hover:bg-zinc-50 disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-0 sm:px-2.5 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             {tr.todayLabel}
           </button>
@@ -212,7 +212,7 @@ export function SlotsCalendar({
             type="button"
             onClick={() => nudge(1)}
             aria-label={viewDays === 1 ? tr.nextDay : viewDays === 3 ? tr.nextThreeDays : tr.nextWeek}
-            className="rounded-md border border-zinc-200 px-2.5 py-1 text-sm leading-none hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-zinc-200 px-2.5 py-1 text-sm leading-none hover:bg-zinc-50 sm:min-h-0 sm:min-w-0 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             ›
           </button>
@@ -228,7 +228,7 @@ export function SlotsCalendar({
                 type="button"
                 onClick={() => setViewDays(v)}
                 className={
-                  "px-2 py-1 text-xs font-medium transition-colors " +
+                  "inline-flex min-h-[44px] min-w-[44px] items-center justify-center px-3 py-2 text-xs font-medium transition-colors sm:min-h-0 sm:min-w-0 sm:px-2 sm:py-1 " +
                   (i === 0 ? "rounded-l-md " : "") +
                   (i === 2 ? "rounded-r-md " : "") +
                   (i !== 0 ? "border-l border-zinc-200 dark:border-zinc-700 " : "") +
@@ -401,7 +401,12 @@ export function SlotsCalendar({
                 return (
                   <div
                     key={i}
-                    className="absolute inset-x-1 cursor-pointer overflow-hidden rounded border border-emerald-300 bg-emerald-100 px-1 py-0.5 text-[11px] leading-tight text-emerald-900 transition-colors hover:bg-emerald-200 dark:border-emerald-700/60 dark:bg-emerald-900/40 dark:text-emerald-100 dark:hover:bg-emerald-900/60"
+                    // Mobile floors the clickable band at 44 px (WCAG 2.5.5
+                    // tap target). The CSS min-height overrides the JS-set
+                    // height when the natural slot is shorter — ultra-narrow
+                    // bands (15-min window between busy events) still get a
+                    // thumb-sized hitbox. Desktop keeps the exact height.
+                    className="absolute inset-x-1 min-h-[44px] cursor-pointer overflow-hidden rounded border border-emerald-300 bg-emerald-100 px-1 py-0.5 text-[11px] leading-tight text-emerald-900 transition-colors hover:bg-emerald-200 dark:border-emerald-700/60 dark:bg-emerald-900/40 dark:text-emerald-100 dark:hover:bg-emerald-900/60 sm:min-h-0"
                     style={{ top, height }}
                     title={
                       onIntervalClick

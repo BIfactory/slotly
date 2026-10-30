@@ -20,7 +20,8 @@ export function LangSwitch({
         onClick={() => onChange("cs")}
         aria-pressed={locale === "cs"}
         className={
-          "px-2 py-1 transition-colors " +
+          // 44x44 tap target on mobile per WCAG 2.5.5; desktop stays tight.
+          "min-h-[44px] min-w-[44px] px-3 py-2 transition-colors sm:min-h-0 sm:min-w-0 sm:px-2 sm:py-1 " +
           (locale === "cs"
             ? "bg-indigo-600 text-white dark:bg-indigo-500"
             : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800")
@@ -33,7 +34,7 @@ export function LangSwitch({
         onClick={() => onChange("en")}
         aria-pressed={locale === "en"}
         className={
-          "border-l px-2 py-1 transition-colors " +
+          "min-h-[44px] min-w-[44px] border-l px-3 py-2 transition-colors sm:min-h-0 sm:min-w-0 sm:px-2 sm:py-1 " +
           (locale === "en"
             ? "border-indigo-600 bg-indigo-600 text-white dark:border-indigo-500 dark:bg-indigo-500"
             : "border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800")
