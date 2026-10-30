@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, CalendarClock, CheckCircle2, MapPin, Video } from "lucide-react";
 import { LangSwitch } from "@/components/LangSwitch";
 import { Logo } from "@/components/Logo";
+import { Skeleton } from "@/components/Skeleton";
 import { SlotsCalendar } from "@/components/SlotsCalendar";
 import { Button, FormError, Label } from "@/components/ui";
 import {
@@ -113,9 +114,7 @@ export default function ManageBookingPage() {
       </div>
 
       <main className="mx-auto max-w-2xl px-6 py-10">
-        {state === "loading" && (
-          <p className="text-sm text-zinc-500">{t.loadingYourBooking}</p>
-        )}
+        {state === "loading" && <ManageBookingSkeleton />}
 
         {state === "not_found" && (
           <div className="rounded-xl border border-zinc-200 bg-white p-8 text-center dark:border-zinc-800 dark:bg-zinc-900">
@@ -548,4 +547,42 @@ function StatusPill({
 
 function fmt(d: Date): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+// ---------------------------------------------------------------------------
+// ManageBookingSkeleton — layout-shaped placeholder for the "loading your
+// booking" state. Mirrors the real booking card so the eye lands on the
+// right structure when the payload arrives.
+// ---------------------------------------------------------------------------
+
+function ManageBookingSkeleton() {
+  return (
+    <section
+      aria-busy="true"
+      className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+    >
+      <div className="flex items-start gap-3">
+        <Skeleton className="h-10 w-10 rounded-lg" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <Skeleton className="h-6 w-56" />
+          <Skeleton className="h-4 w-40" />
+        </div>
+        <Skeleton className="h-5 w-20 rounded-full" />
+      </div>
+      <div className="mt-6 space-y-3 border-t border-zinc-100 pt-5 dark:border-zinc-800">
+        <div className="flex gap-4">
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="h-4 w-64" />
+        </div>
+        <div className="flex gap-4">
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="h-4 w-48" />
+        </div>
+      </div>
+      <div className="mt-6 flex justify-end gap-2">
+        <Skeleton className="h-9 w-20 rounded-md" />
+        <Skeleton className="h-9 w-28 rounded-md" />
+      </div>
+    </section>
+  );
 }
