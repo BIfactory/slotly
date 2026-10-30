@@ -100,3 +100,6 @@ Desktop.ini
 
 # --- Superpowers SDD scratch (per-plan ledger & briefs) ---
 .superpowers/
+
+# --- Playwright MCP console/snapshot captures (local only) ---
+.playwright-mcp/
