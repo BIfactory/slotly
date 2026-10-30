@@ -1205,6 +1205,13 @@ class PublicMeetingCreateView(APIView):
         if not _looks_like_email(visitor_email):
             return Response({"visitor_email": "Please enter a valid email."}, status=400)
 
+        # Visitor's picked locale ("cs" | "en"). Drives language of all
+        # downstream visitor-facing emails (reminders, host-cancel, rejection).
+        # Default "en" matches pre-i18n behaviour. Unknown values clamp to "en".
+        locale = (body.get("locale") or "en").strip().lower()
+        if locale not in ("cs", "en"):
+            locale = "en"
+
         # If the visitor booked through a MeetingType card, the type
         # dictates duration + kind + default location. This locks the
         # server-authoritative version so a manipulated client can't
@@ -1289,6 +1296,7 @@ class PublicMeetingCreateView(APIView):
                 title=title,
                 notes=notes,
                 location=location,
+                locale=locale,
             )
             _notify_booking_request(user, req)
             return Response({
@@ -1361,6 +1369,7 @@ class PublicMeetingCreateView(APIView):
             start_at=start_dt,
             end_at=end_dt,
             meeting_link_kind=meeting_link_kind,
+            locale=locale,
         )
         description = _description_with_manage_link(base_description, booking)
 
@@ -2203,6 +2212,10 @@ class BookingRequestDecideView(APIView):
                 notes=req.notes,
                 start_at=req.start_at,
                 end_at=req.end_at,
+                # Approval converts BookingRequest.locale into Booking.locale
+                # so subsequent reminders/host-cancel emails stay in the
+                # same language the visitor picked at request time.
+                locale=req.locale,
             )
             description = _description_with_manage_link(base_description, booking)
             try:
@@ -2284,46 +2297,57 @@ def _notify_booking_request(host, req) -> None:
 
 def _mail_visitor_rejection(req, note: str) -> None:
     """Send the visitor a "can't make it" email in both plain text and
-    HTML. Best-effort — approval must not fail because SMTP was flaky."""
+    HTML. Rendered in the visitor's picked locale (`req.locale`) — defaults
+    to English for pre-i18n rows. Best-effort — approval must not fail
+    because SMTP was flaky."""
     from django.conf import settings as _settings
     from django.core.mail import EmailMultiAlternatives
 
     from apps.notifications.emails import blockquote, html_shell, kv_rows, paragraph
+    from apps.scheduling import emails_i18n as _i18n
 
-    when = req.start_at.strftime("%A %d %B, %H:%M")
+    locale = req.locale or "en"
+    when = _i18n.format_when(req.start_at, locale)
     host_name = f"{req.host.first_name} {req.host.last_name}".strip() or req.host.email
-    subject = f"Your Slotly meeting request on {when} was declined"
-
-    text_body = f"Hi {req.visitor_name},\n\n{host_name} isn't able to meet {when}."
-    if note:
-        text_body += f"\n\nNote from {host_name}:\n{note}"
-    text_body += "\n\nFeel free to pick another slot from their booking page."
-
-    intro = paragraph(f"Hi {req.visitor_name},")
-    intro += paragraph(f"{host_name} isn't able to meet on {when}.")
-    intro += kv_rows([
-        ("When", when),
-        ("Where", req.location),
-    ])
-    if note:
-        intro += paragraph(f"Note from {host_name}:")
-        intro += blockquote(note)
-    intro += paragraph(
-        "Feel free to pick another slot from their booking page — no hard feelings.",
-        muted=True,
+    subject = _i18n.t_subject_rejection(locale, when=when)
+    strings = _i18n.t_body_rejection(
+        locale,
+        visitor_name=req.visitor_name,
+        host_name=host_name,
+        when=when,
+        note=note,
     )
 
-    share_link = f"{_settings.FRONTEND_BASE_URL.rstrip('/')}/u/{req.host.share_token}"
+    text_body = f"{strings['greeting']}\n\n{strings['summary']}"
+    if note:
+        text_body += f"\n\n{strings['note_header']}\n{note}"
+    text_body += f"\n\n{strings['closing']}"
+
+    intro = paragraph(strings["greeting"])
+    intro += paragraph(strings["summary"])
+    intro += kv_rows([
+        (strings["kv_when"], when),
+        (strings["kv_where"], req.location),
+    ])
+    if note:
+        intro += paragraph(strings["note_header"])
+        intro += blockquote(note)
+    intro += paragraph(strings["closing"], muted=True)
+
+    share_link = (
+        f"{_settings.FRONTEND_BASE_URL.rstrip('/')}/u/{req.host.share_token}"
+        f"?lang={_i18n._norm(locale)}"
+    )
     html_body = html_shell(
-        title=f"{host_name} can't make that time",
+        title=strings["title"],
         intro_html=intro,
-        cta_label="Pick another slot",
+        cta_label=strings["cta_label"],
         cta_url=share_link,
     )
 
     try:
         msg = EmailMultiAlternatives(
-            subject=f"[Slotly] {subject}",
+            subject=f"{_i18n.subject_tag(locale)} {subject}",
             body=text_body,
             from_email=_settings.DEFAULT_FROM_EMAIL,
             to=[req.visitor_email],

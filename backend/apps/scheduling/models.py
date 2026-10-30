@@ -289,6 +289,19 @@ class Booking(models.Model):
         default=MeetingLinkKind.AUTO,
     )
 
+    # Visitor's picked language at booking time. Drives the language of the
+    # visitor-facing emails Slotly sends later (host-cancel, reminders, etc.).
+    # Default "en" preserves pre-i18n behavior for existing rows.
+    class Locale(models.TextChoices):
+        ENGLISH = "en", "English"
+        CZECH = "cs", "Czech"
+
+    locale = models.CharField(
+        max_length=2,
+        choices=Locale.choices,
+        default=Locale.ENGLISH,
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -349,6 +362,15 @@ class BookingRequest(models.Model):
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     decision_note = models.CharField(max_length=500, blank=True)
     event_id = models.CharField(max_length=256, blank=True)
+
+    # Visitor's picked language at request time. Copied onto the Booking
+    # when the host approves this request, so the approval/rejection email
+    # and later reminders go out in the right language.
+    locale = models.CharField(
+        max_length=2,
+        choices=Booking.Locale.choices,
+        default=Booking.Locale.ENGLISH,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     decided_at = models.DateTimeField(null=True, blank=True)
