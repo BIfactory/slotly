@@ -9,7 +9,17 @@ import {
   type FormEvent,
 } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Copy, KeyRound, X } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  Clock,
+  Copy,
+  Eye,
+  KeyRound,
+  Pencil,
+  Trash2,
+  X,
+} from "lucide-react";
 import { AuthedHeader } from "@/components/AuthedHeader";
 import { SettingsLayout } from "@/components/SettingsLayout";
 import { SettingsNav } from "@/components/SettingsNav";
@@ -23,6 +33,7 @@ import {
   type McpTokenScope,
   type McpTokenScopeChoice,
   MCP_SCOPE_CHOICES_FALLBACK,
+  MCP_TOKEN_SCOPE_LABELS,
   McpTokenApiError,
   createMcpToken,
   listMcpTokenCalls,
@@ -609,72 +620,122 @@ function TokenCard({
   const lastUsed = token.last_used_at ? relativeTime(token.last_used_at) : "Never";
   const hasWriteScope = token.scopes.some((s) => WRITE_SCOPES_SET.has(s));
 
+  // Inactive tokens are muted — same layout, lower contrast so the active
+  // ones draw the eye in a long list.
+  const bodyOpacity = token.is_active ? "" : "opacity-70";
+
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      {/* Row 1: name + status badge */}
-      <div className="flex items-start justify-between gap-3">
+    <div className="group rounded-xl border border-zinc-200 bg-white p-5 shadow-sm transition-all hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700">
+      {/* Identity row: title + prefix on the left, status + write pill on the right */}
+      <div className={"flex items-start justify-between gap-3 " + bodyOpacity}>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-zinc-900 dark:text-zinc-50">{token.name}</span>
-            {hasWriteScope && (
-              <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-                Write
-              </span>
-            )}
+          <div className="flex items-center gap-2">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-950/40 dark:text-indigo-300">
+              <KeyRound size={16} aria-hidden />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="truncate text-base font-semibold text-zinc-900 dark:text-zinc-50">
+                {token.name}
+              </h3>
+              <p className="truncate font-mono text-[11px] leading-tight text-zinc-500 dark:text-zinc-400">
+                {token.prefix}&hellip;
+              </p>
+            </div>
           </div>
-          <p className="mt-1 font-mono text-xs text-zinc-500 dark:text-zinc-400">
-            {token.prefix}&hellip;
-          </p>
         </div>
-        <span
-          className={
-            token.is_active
-              ? "shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-              : "shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
-          }
-        >
-          {token.is_active ? "Active" : "Revoked"}
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span
+            className={
+              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " +
+              (token.is_active
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+                : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400")
+            }
+          >
+            <span
+              className={
+                "h-1.5 w-1.5 rounded-full " +
+                (token.is_active ? "bg-emerald-500" : "bg-zinc-400")
+              }
+              aria-hidden
+            />
+            {token.is_active ? "Active" : "Revoked"}
+          </span>
+          {hasWriteScope && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+              <Pencil size={9} aria-hidden />
+              Write
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Permissions */}
+      <div className={"mt-4 " + bodyOpacity}>
+        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+          Permissions
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {token.scopes.map((s) => {
+            const isWrite = WRITE_SCOPES_SET.has(s);
+            const label = MCP_TOKEN_SCOPE_LABELS[s as McpTokenScope] ?? s;
+            return (
+              <span
+                key={s}
+                title={s}
+                className={
+                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium " +
+                  (isWrite
+                    ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-200"
+                    : "border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-800/60 dark:bg-indigo-950/30 dark:text-indigo-200")
+                }
+              >
+                {isWrite ? (
+                  <Pencil size={10} aria-hidden />
+                ) : (
+                  <Eye size={10} aria-hidden />
+                )}
+                {label}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Metadata — single inline row with icons, no form-y dl grid */}
+      <div
+        className={
+          "mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400 " +
+          bodyOpacity
+        }
+      >
+        <span className="inline-flex items-center gap-1">
+          <Clock size={12} aria-hidden />
+          <span className="font-medium text-zinc-600 dark:text-zinc-300">Created</span>
+          <span>{created}</span>
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <Activity size={12} aria-hidden />
+          <span className="font-medium text-zinc-600 dark:text-zinc-300">Last used</span>
+          <span>{lastUsed}</span>
         </span>
       </div>
 
-      {/* Row 2: scopes */}
-      <div className="mt-3 flex flex-wrap gap-1">
-        {token.scopes.map((s) => (
-          <span
-            key={s}
-            className={
-              WRITE_SCOPES_SET.has(s)
-                ? "rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
-                : "rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
-            }
-          >
-            {s}
-          </span>
-        ))}
-      </div>
-
-      {/* Row 3: metadata */}
-      <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <dt className="text-zinc-500 dark:text-zinc-400">Created</dt>
-        <dd className="text-right text-zinc-700 dark:text-zinc-200">{created}</dd>
-        <dt className="text-zinc-500 dark:text-zinc-400">Last used</dt>
-        <dd className="text-right text-zinc-700 dark:text-zinc-200">{lastUsed}</dd>
-      </dl>
-
-      {/* Row 4: actions, right-aligned, ≥44px touch targets */}
-      <div className="mt-3 flex flex-wrap justify-end gap-2">
+      {/* Divider + actions */}
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
         <button
           type="button"
           onClick={() => onViewCalls(token)}
-          className="inline-flex min-h-[44px] items-center rounded-md border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-300"
         >
+          <Activity size={14} aria-hidden />
           View calls
         </button>
         {token.is_active ? (
           <button
             type="button"
             onClick={() => onRevoke(token)}
-            className="inline-flex min-h-[44px] items-center rounded-md border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
           >
             Revoke
           </button>
@@ -682,8 +743,9 @@ function TokenCard({
           <button
             type="button"
             onClick={() => onPurge(token)}
-            className="inline-flex min-h-[44px] items-center rounded-md border border-red-300 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-950/70"
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
           >
+            <Trash2 size={14} aria-hidden />
             Delete
           </button>
         )}
