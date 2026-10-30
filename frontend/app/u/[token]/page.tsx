@@ -13,6 +13,7 @@ import { ArrowLeft, ArrowRight, Globe, MapPin, Video } from "lucide-react";
 import { BookingDialog, type BookingSubmit } from "@/components/BookingDialog";
 import { LangSwitch } from "@/components/LangSwitch";
 import { Logo } from "@/components/Logo";
+import { Skeleton } from "@/components/Skeleton";
 import { SlotsCalendar } from "@/components/SlotsCalendar";
 import { createPublicMeeting } from "@/lib/google";
 import { T, useLocale } from "@/lib/i18n";
@@ -142,11 +143,7 @@ function PublicProfilePageInner() {
   }
 
   if (!data) {
-    return (
-      <main className="grid min-h-screen place-items-center bg-zinc-50 dark:bg-zinc-950">
-        <div className="text-sm text-zinc-500">{t.loading}</div>
-      </main>
-    );
+    return <PublicProfileSkeleton />;
   }
 
   const { display_name, avatar_url, country } = data.profile;
@@ -404,7 +401,7 @@ function PublicProfilePageInner() {
               getPublicProfile(token).then(setData).catch(() => {});
             }, 6000);
           } catch (err) {
-            setBookingError(err instanceof Error ? err.message : "Couldn't create meeting");
+            setBookingError(err instanceof Error ? err.message : t.couldntCreateMeeting);
           } finally {
             setBookingSubmitting(false);
           }
@@ -485,5 +482,68 @@ function TypeList({
         ))}
       </ul>
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PublicProfileSkeleton — layout-shaped placeholder shown while the profile
+// payload is in flight. Mirrors the brand bar, hero card, and the calendar
+// grid so the real content lands where the eye already expects it.
+// ---------------------------------------------------------------------------
+
+function PublicProfileSkeleton() {
+  return (
+    <main className="min-h-screen bg-zinc-50 dark:bg-zinc-950" aria-busy="true">
+      <div className="border-b border-zinc-200 bg-white px-6 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+          <Skeleton className="h-5 w-16" />
+          <Skeleton className="h-6 w-20 rounded-md" />
+        </div>
+      </div>
+      <header className="border-b border-zinc-200 bg-white py-10 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mx-auto flex max-w-3xl items-center gap-5 px-6">
+          <Skeleton className="h-20 w-20 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-6 w-56" />
+            <Skeleton className="h-4 w-72" />
+          </div>
+        </div>
+      </header>
+      <section className="mx-auto max-w-3xl px-6 py-8">
+        <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex items-center justify-between border-b border-zinc-100 px-3 py-3 dark:border-zinc-800">
+            <Skeleton className="h-7 w-24 rounded-md" />
+            <Skeleton className="h-7 w-32 rounded-md" />
+            <Skeleton className="h-5 w-28" />
+          </div>
+          <div className="grid grid-cols-7 gap-px bg-zinc-100 p-px dark:bg-zinc-800">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <div key={i} className="bg-white px-2 py-2 dark:bg-zinc-900">
+                <Skeleton className="mx-auto h-3 w-6" />
+                <Skeleton className="mx-auto mt-1 h-4 w-10" />
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-px bg-zinc-100 p-px dark:bg-zinc-800">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <div key={i} className="relative h-[384px] bg-white dark:bg-zinc-900">
+                {i % 2 === 0 && (
+                  <Skeleton
+                    className="absolute inset-x-1 h-14 bg-emerald-100 dark:bg-emerald-900/40"
+                    style={{ top: "80px" }}
+                  />
+                )}
+                {i % 3 === 0 && (
+                  <Skeleton
+                    className="absolute inset-x-1 h-10 bg-emerald-100 dark:bg-emerald-900/40"
+                    style={{ top: "180px" }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }
