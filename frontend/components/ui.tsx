@@ -13,8 +13,10 @@ export function Button({
   className = "",
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
+  // Mobile-first: 44px tap target (WCAG 2.5.5 minimum). Desktop keeps the
+  // tighter 40px so dense forms don't look chunky with a mouse.
   const base =
-    "inline-flex h-10 w-full items-center justify-center rounded-md px-4 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50";
+    "inline-flex h-11 w-full items-center justify-center rounded-md px-4 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 sm:h-10";
   const styles: Record<ButtonVariant, string> = {
     primary:
       "bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:bg-indigo-500 dark:hover:bg-indigo-600 dark:focus-visible:ring-offset-zinc-900",

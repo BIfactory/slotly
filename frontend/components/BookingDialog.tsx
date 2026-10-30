@@ -345,7 +345,7 @@ export function BookingDialog({
             type="button"
             onClick={onClose}
             disabled={submitting}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 sm:h-8 sm:w-8"
             aria-label={t.cancelAction}
           >
             <XIcon size={18} aria-hidden />
@@ -652,7 +652,7 @@ export function BookingDialog({
             <button
               type="button"
               onClick={() => setShowNotes(true)}
-              className="text-xs font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
+              className="inline-flex min-h-[44px] items-center text-xs font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 sm:min-h-0"
             >
               {t.addNote}
             </button>
@@ -855,7 +855,8 @@ function ChipButton({
       onClick={onClick}
       aria-pressed={active}
       className={
-        "shrink-0 rounded-full border px-3 py-1 text-sm transition-colors " +
+        // 44px tap target on mobile (WCAG 2.5.5), 28px tight pill on desktop.
+        "inline-flex min-h-[44px] shrink-0 items-center rounded-full border px-4 py-2 text-sm transition-colors sm:min-h-0 sm:px-3 sm:py-1 " +
         (active
           ? "border-indigo-600 bg-indigo-600 text-white dark:border-indigo-500 dark:bg-indigo-500"
           : "border-zinc-300 bg-white text-zinc-700 hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800")
