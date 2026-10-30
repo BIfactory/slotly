@@ -273,7 +273,7 @@ export function SlotsCalendar({
             <div
               key={day.toISOString()}
               className={`border-l border-zinc-100 px-2 py-2 text-center dark:border-zinc-800 ${bg}`}
-              title={holidayName ? `Public holiday: ${holidayName}` : undefined}
+              title={holidayName ? tr.publicHolidayTooltip(holidayName) : undefined}
             >
               <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
                 {day.toLocaleDateString(bcp47, { weekday: "short" })}
@@ -372,7 +372,7 @@ export function SlotsCalendar({
                     <div className="pr-5 font-medium">
                       {b.label}
                       {b.isAllDay && (
-                        <span className="ml-1 text-[10px] opacity-70">all day</span>
+                        <span className="ml-1 text-[10px] opacity-70">{tr.allDayLabel}</span>
                       )}
                     </div>
                     {clickable && (

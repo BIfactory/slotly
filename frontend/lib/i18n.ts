@@ -85,6 +85,9 @@ type Dict = {
   loading: string;
   getYourOwn: string;
   langSwitchAria: string;
+  publicHolidayTooltip: (name: string) => string;
+  allDayLabel: string;
+  couldntCreateMeeting: string;
 
   // /u/[token] — public profile / booking landing
   profileNotFound: string;
@@ -202,6 +205,9 @@ export const T: Record<Locale, Dict> = {
     loading: "Načítám…",
     getYourOwn: "Chci také",
     langSwitchAria: "Zvolit jazyk",
+    publicHolidayTooltip: (name) => `Státní svátek: ${name}`,
+    allDayLabel: "celý den",
+    couldntCreateMeeting: "Rezervaci se nepodařilo založit. Zkuste to prosím za chvíli znovu.",
 
     profileNotFound: "Profil nenalezen",
     profileNotFoundHint: "Tento odkaz je neplatný nebo již není veřejný.",
@@ -326,6 +332,9 @@ export const T: Record<Locale, Dict> = {
     loading: "Loading…",
     getYourOwn: "Get your own",
     langSwitchAria: "Choose language",
+    publicHolidayTooltip: (name) => `Public holiday: ${name}`,
+    allDayLabel: "all day",
+    couldntCreateMeeting: "Couldn't create meeting. Please try again in a minute.",
 
     profileNotFound: "Profile not found",
     profileNotFoundHint: "This link is invalid or no longer public.",
