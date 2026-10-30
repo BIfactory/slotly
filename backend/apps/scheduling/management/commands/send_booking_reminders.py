@@ -124,53 +124,71 @@ class Command(BaseCommand):
         )
 
     def _send(self, b: Booking, *, stage: str, cfg: dict, dry_run: bool, frontend_base: str) -> None:
+        """Render + send a reminder in the booking's locale. `cfg` is still
+        passed in from the stage registry (defines the stage key, delay, etc.)
+        but the human-readable verbs now come from `emails_i18n` so a CS
+        visitor gets "Zítra:" / "Za hodinu:" instead of "Tomorrow" / "In
+        an hour"."""
         from django.conf import settings as _settings
+        from apps.scheduling import emails_i18n as _i18n
 
         if not b.visitor_email:
             self.stdout.write(f"  {b.uuid}: skipped — no visitor email on row")
             return
 
+        locale = b.locale or "en"
         host_name = f"{b.host.first_name} {b.host.last_name}".strip() or b.host.email
-        when = b.start_at.strftime("%A %d %B, %H:%M")
+        when = _i18n.format_when(b.start_at, locale)
+        strings = _i18n.t_reminder_strings(locale, stage=stage)
+        greeting_name = b.visitor_name or (
+            "tam" if _i18n._norm(locale) == "cs" else "there"
+        )
 
         subject = (
-            f"{cfg['subject_verb']}: your meeting with {host_name} "
-            f"at {b.start_at.strftime('%H:%M')}"
+            f"{strings['subject_verb']}: "
+            + (
+                f"schůzka s {host_name} v {b.start_at.strftime('%H:%M')}"
+                if _i18n._norm(locale) == "cs"
+                else f"your meeting with {host_name} at {b.start_at.strftime('%H:%M')}"
+            )
         )
         text_body = (
-            f"Hi {b.visitor_name or 'there'},\n\n"
-            f"{cfg['intro']} You're meeting {host_name} {when}."
+            strings["greeting"].format(name=greeting_name)
+            + "\n\n"
+            + strings["body_meeting_line"].format(
+                intro=strings["intro"], host=host_name, when=when,
+            )
         )
         if b.location:
-            text_body += f"\n\nWhere: {b.location}"
-        text_body += f"\n\nNeed to cancel? {frontend_base.rstrip('/')}/b/{b.uuid}"
+            text_body += f"\n\n{strings['where_prefix']}{b.location}"
+        text_body += f"\n\n{strings['cancel_prefix']}{frontend_base.rstrip('/')}/b/{b.uuid}"
 
         html_body = html_shell(
-            title=(
-                f"Meeting with {host_name} — {cfg['subject_verb'].lower()}"
+            title=strings["title_meeting_prefix"].format(
+                host=host_name, verb_lower=strings["subject_verb"].lower(),
             ),
             intro_html=(
-                paragraph(cfg["intro"])
-                + kv_rows([
-                    ("When", when),
-                    ("Where" if b.location else "", b.location),
-                ])
-                + paragraph(
-                    "The calendar invite is already in your inbox with any "
-                    "video link.",
-                    muted=True,
+                paragraph(
+                    strings["body_meeting_line"].format(
+                        intro=strings["intro"], host=host_name, when=when,
+                    )
                 )
+                + kv_rows([
+                    (strings["kv_when"], when),
+                    (strings["kv_where"] if b.location else "", b.location),
+                ])
+                + paragraph(strings["calendar_hint"], muted=True)
             ),
-            cta_label="Manage or cancel",
-            cta_url=f"{frontend_base.rstrip('/')}/b/{b.uuid}",
+            cta_label=strings["cta_label"],
+            cta_url=f"{frontend_base.rstrip('/')}/b/{b.uuid}?lang={_i18n._norm(locale)}",
         )
 
-        self.stdout.write(f"  {b.uuid}: → {b.visitor_email} ({when}) [stage={stage}]")
+        self.stdout.write(f"  {b.uuid}: → {b.visitor_email} ({when}) [stage={stage}, locale={locale}]")
         if dry_run:
             return
 
         msg = EmailMultiAlternatives(
-            subject=f"[Slotly] {subject}",
+            subject=f"{_i18n.subject_tag(locale)} {subject}",
             body=text_body,
             from_email=_settings.DEFAULT_FROM_EMAIL,
             to=[b.visitor_email],

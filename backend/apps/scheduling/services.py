@@ -813,40 +813,51 @@ def _provider_for(name: str):
 
 
 def _mail_visitor_host_cancellation(booking: Booking, reason: str) -> None:
-    """Branded HTML/text email to the visitor when the host cancels."""
+    """Branded HTML/text email to the visitor when the host cancels. Rendered
+    in the visitor's picked locale (`booking.locale`) — defaults to English
+    for pre-i18n rows."""
     from django.conf import settings as _settings
     from django.core.mail import EmailMultiAlternatives
 
     from apps.notifications.emails import blockquote, html_shell, kv_rows, paragraph
+    from apps.scheduling import emails_i18n as _i18n
 
-    when = booking.start_at.strftime("%A %d %B, %H:%M")
+    locale = booking.locale or "en"
+    when = _i18n.format_when(booking.start_at, locale)
     host_name = f"{booking.host.first_name} {booking.host.last_name}".strip() or booking.host.email
-    subject = f"{host_name} cancelled your meeting on {when}"
-
-    text_body = (
-        f"Hi {booking.visitor_name or 'there'},\n\n"
-        f"{host_name} had to cancel your meeting on {when}."
+    greeting_name = booking.visitor_name or (
+        "tam" if _i18n._norm(locale) == "cs" else "there"
     )
-    if reason:
-        text_body += f"\n\nNote from {host_name}:\n{reason}"
+    subject = _i18n.t_subject_host_cancel(locale, host_name=host_name, when=when)
+    strings = _i18n.t_body_host_cancel(
+        locale,
+        greeting_name=greeting_name,
+        host_name=host_name,
+        when=when,
+        reason=reason,
+    )
 
-    intro = paragraph(f"Hi {booking.visitor_name or 'there'},")
-    intro += paragraph(f"{host_name} had to cancel your meeting.")
-    intro += kv_rows([("When", when), ("Where", booking.location)])
+    text_body = f"{strings['greeting']}\n\n{strings['summary']} ({when})"
     if reason:
-        intro += paragraph(f"Note from {host_name}:")
+        text_body += f"\n\n{strings['note_header']}\n{reason}"
+
+    intro = paragraph(strings["greeting"])
+    intro += paragraph(strings["summary"])
+    intro += kv_rows([(strings["kv_when"], when), (strings["kv_where"], booking.location)])
+    if reason:
+        intro += paragraph(strings["note_header"])
         intro += blockquote(reason)
 
     html_body = html_shell(
-        title=f"{host_name} cancelled your meeting",
+        title=strings["title"],
         intro_html=intro,
-        cta_label="Pick another slot",
-        cta_url=f"{_settings.FRONTEND_BASE_URL.rstrip('/')}/u/{booking.host.share_token}",
+        cta_label=strings["cta_label"],
+        cta_url=f"{_settings.FRONTEND_BASE_URL.rstrip('/')}/u/{booking.host.share_token}?lang={_i18n._norm(locale)}",
     )
 
     try:
         msg = EmailMultiAlternatives(
-            subject=f"[Slotly] {subject}",
+            subject=f"{_i18n.subject_tag(locale)} {subject}",
             body=text_body,
             from_email=_settings.DEFAULT_FROM_EMAIL,
             to=[booking.visitor_email],

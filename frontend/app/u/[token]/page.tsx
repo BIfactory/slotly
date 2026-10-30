@@ -350,6 +350,9 @@ function PublicProfilePageInner() {
               customAnswers: v.customAnswers,
               // Only send when visitor explicitly picked a provider (not "auto").
               meetingLinkKind: meetingLinkKind !== "auto" ? meetingLinkKind : undefined,
+              // Picked language — server stores it on the Booking row so
+              // later emails (reminders, host-cancel) stay in this language.
+              locale,
             });
             // Meeting type may configure a post-booking redirect URL —
             // typically the host's own "thank you" page for conversion

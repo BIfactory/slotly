@@ -192,6 +192,11 @@ export async function createPublicMeeting(input: {
    * both Google and Microsoft connected and the visitor explicitly picks one.
    * Omit (or pass undefined) to use the host's default ("auto"). */
   meetingLinkKind?: "google_meet" | "teams";
+  /** Visitor's picked locale ("cs" | "en"). Server stores this on the
+   * Booking row so later visitor-facing emails (reminders, host-cancel,
+   * rejection) are rendered in the right language. Default "en" matches
+   * pre-i18n behaviour. */
+  locale?: "cs" | "en";
 }): Promise<PublicBookingResult> {
   const payload: Record<string, unknown> = {
     visitor_name: input.visitorName,
@@ -205,6 +210,7 @@ export async function createPublicMeeting(input: {
     type_slug: input.typeSlug,
     custom_answers: input.customAnswers ?? {},
     hp: input.hp ?? "",
+    locale: input.locale ?? "en",
   };
   if (input.meetingLinkKind) {
     payload.meeting_link_kind = input.meetingLinkKind;

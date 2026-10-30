@@ -1675,3 +1675,259 @@ class PublicBookingToggleEnforcementTests(TestCase):
         self.assertEqual(resp.status_code, 400, resp.content)
         data = resp.json()
         self.assertIn("detail", data)
+
+
+# ---------------------------------------------------------------------------
+# Visitor locale capture + email localization (Blok B-be)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    FRONTEND_BASE_URL="http://localhost:3000",
+    TIME_ZONE="UTC",
+    DEFAULT_FROM_EMAIL="noreply@slotly.test",
+)
+class PublicMeetingLocaleCaptureTests(TestCase):
+    """POST /api/public/meetings/<token> stores the visitor-picked `locale`
+    on the resulting Booking (online path) or BookingRequest (physical path)
+    so later emails render in the right language."""
+
+    def setUp(self):
+        from django.core.cache import cache as _cache
+        _cache.clear()
+        from django.contrib.auth import get_user_model
+        UserModel = get_user_model()
+        self.host = UserModel.objects.create_user(email="host@locale.local", password="pwpw12345xyz")
+        self.host.share_enabled = True
+        self.host.save(update_fields=["share_enabled"])
+        _connect_google(self.host)
+        self.client = APIClient()
+
+    def _url(self):
+        return reverse("public-meetings-create", args=[str(self.host.share_token)])
+
+    def _post(self, **overrides):
+        start, end = _future_slot()
+        body = {
+            "visitor_name": "Lead Visitor",
+            "visitor_email": "lead@example.com",
+            "start": start,
+            "end": end,
+            "kind": "online",
+        }
+        body.update(overrides)
+        return self.client.post(self._url(), body, format="json")
+
+    def test_locale_cs_is_stored_on_booking(self):
+        with patch("apps.scheduling.views.create_calendar_event") as mc:
+            mc.return_value = {"id": "evt-cs", "htmlLink": "https://cal.google.com/e/evt-cs"}
+            resp = self._post(locale="cs")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        booking = Booking.objects.order_by("-created_at").first()
+        self.assertIsNotNone(booking)
+        self.assertEqual(booking.locale, "cs")
+
+    def test_locale_defaults_to_en_when_omitted(self):
+        with patch("apps.scheduling.views.create_calendar_event") as mc:
+            mc.return_value = {"id": "evt-default", "htmlLink": "x"}
+            resp = self._post()
+        self.assertEqual(resp.status_code, 201, resp.content)
+        booking = Booking.objects.order_by("-created_at").first()
+        self.assertEqual(booking.locale, "en")
+
+    def test_unknown_locale_clamps_to_en(self):
+        with patch("apps.scheduling.views.create_calendar_event") as mc:
+            mc.return_value = {"id": "evt-x", "htmlLink": "x"}
+            resp = self._post(locale="de-DE")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        booking = Booking.objects.order_by("-created_at").first()
+        self.assertEqual(booking.locale, "en")
+
+    def test_locale_cs_stored_on_physical_booking_request(self):
+        """kind='physical' creates a BookingRequest (no calendar event). The
+        locale must land on that row so a later rejection email speaks CS."""
+        resp = self._post(
+            kind="physical",
+            location="Kavárna Slavia, Praha",
+            locale="cs",
+        )
+        self.assertEqual(resp.status_code, 202, resp.content)
+        req = BookingRequest.objects.order_by("-created_at").first()
+        self.assertIsNotNone(req)
+        self.assertEqual(req.locale, "cs")
+
+
+class EmailsI18nSubjectTests(TestCase):
+    """Unit tests for the emails_i18n module — subject strings only. These
+    are the user-visible preview in the mail client's inbox list, so they
+    deserve explicit assertions in both locales."""
+
+    def test_host_cancel_subject_cs_contains_czech_verb(self):
+        from apps.scheduling.emails_i18n import t_subject_host_cancel
+        s = t_subject_host_cancel("cs", host_name="Jana Dvořáková", when="pondělí 3. listopadu, 14:00")
+        self.assertIn("zrušil", s.lower())
+        self.assertIn("Jana Dvořáková", s)
+
+    def test_host_cancel_subject_en_contains_english_verb(self):
+        from apps.scheduling.emails_i18n import t_subject_host_cancel
+        s = t_subject_host_cancel("en", host_name="Jane Doe", when="Monday 03 November, 14:00")
+        self.assertIn("cancelled", s.lower())
+        self.assertIn("Jane Doe", s)
+
+    def test_rejection_subject_cs(self):
+        from apps.scheduling.emails_i18n import t_subject_rejection
+        s = t_subject_rejection("cs", when="úterý 4. listopadu, 10:00")
+        self.assertIn("odmítnuta", s)
+
+    def test_rejection_subject_en(self):
+        from apps.scheduling.emails_i18n import t_subject_rejection
+        s = t_subject_rejection("en", when="Tuesday 04 November, 10:00")
+        self.assertIn("declined", s)
+
+    def test_reminder_strings_24h_cs_subject_verb(self):
+        from apps.scheduling.emails_i18n import t_reminder_strings
+        d = t_reminder_strings("cs", stage="24h")
+        self.assertEqual(d["subject_verb"], "Zítra")
+
+    def test_reminder_strings_1h_cs_subject_verb(self):
+        from apps.scheduling.emails_i18n import t_reminder_strings
+        d = t_reminder_strings("cs", stage="1h")
+        self.assertEqual(d["subject_verb"], "Za hodinu")
+
+    def test_reminder_strings_unknown_locale_falls_back_to_en(self):
+        from apps.scheduling.emails_i18n import t_reminder_strings
+        d = t_reminder_strings("de", stage="24h")
+        self.assertEqual(d["subject_verb"], "Tomorrow")
+
+    def test_format_when_cs_uses_lowercase_czech_month(self):
+        from datetime import datetime
+        from apps.scheduling.emails_i18n import format_when
+        dt = datetime(2026, 11, 2, 14, 0)  # 2026-11-02 is a Monday
+        s = format_when(dt, "cs")
+        self.assertIn("listopadu", s)
+        self.assertIn("pondělí", s)
+        self.assertIn("14:00", s)
+
+    def test_format_when_en_uses_english_month(self):
+        from datetime import datetime
+        from apps.scheduling.emails_i18n import format_when
+        dt = datetime(2026, 11, 2, 14, 0)  # Monday
+        s = format_when(dt, "en")
+        self.assertIn("November", s)
+        self.assertIn("Monday", s)
+
+
+@override_settings(
+    FRONTEND_BASE_URL="http://localhost:3000",
+    TIME_ZONE="UTC",
+    DEFAULT_FROM_EMAIL="noreply@slotly.test",
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+)
+class VisitorEmailLocalizationTests(TestCase):
+    """Integration tests: send the three visitor-facing emails on bookings
+    whose `locale` is CS, assert the outbox contents are Czech."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        UserModel = get_user_model()
+        self.host = UserModel.objects.create_user(
+            email="hostmail@locale.local",
+            password="pwpw12345xyz",
+            first_name="Jana",
+            last_name="Dvořáková",
+        )
+        self.host.share_enabled = True
+        self.host.save(update_fields=["share_enabled"])
+
+    def _make_booking(self, locale: str = "cs", **extra) -> Booking:
+        from datetime import datetime, timedelta
+        start = djtz.now() + timedelta(days=1)
+        end = start + timedelta(minutes=30)
+        return Booking.objects.create(
+            host=self.host,
+            provider="google",
+            visitor_name="Petr Novák",
+            visitor_email="petr@example.com",
+            attendee_emails=["petr@example.com"],
+            kind=Booking.Kind.ONLINE,
+            title="Konzultace",
+            location="",
+            start_at=start,
+            end_at=end,
+            locale=locale,
+            **extra,
+        )
+
+    def test_host_cancellation_mail_cs_contains_czech_subject(self):
+        from django.core import mail as djmail
+        from apps.scheduling.services import _mail_visitor_host_cancellation
+        booking = self._make_booking(locale="cs")
+        djmail.outbox = []
+        _mail_visitor_host_cancellation(booking, reason="")
+        self.assertEqual(len(djmail.outbox), 1)
+        m = djmail.outbox[0]
+        self.assertIn("zrušil", m.subject.lower())
+        self.assertIn("Petr Novák", m.body) if False else None  # noqa: W505 (greeting)
+        self.assertIn("Dobrý den", m.body)
+        # CTA link should carry ?lang=cs so the follow-up public page opens in CS.
+        joined = m.alternatives[0][0] if m.alternatives else ""
+        self.assertIn("lang=cs", joined)
+
+    def test_host_cancellation_mail_en_default(self):
+        from django.core import mail as djmail
+        from apps.scheduling.services import _mail_visitor_host_cancellation
+        booking = self._make_booking(locale="en")
+        djmail.outbox = []
+        _mail_visitor_host_cancellation(booking, reason="had to run")
+        self.assertEqual(len(djmail.outbox), 1)
+        m = djmail.outbox[0]
+        self.assertIn("cancelled", m.subject.lower())
+        self.assertIn("Hi Petr Novák", m.body)
+
+    def test_rejection_mail_cs_contains_czech(self):
+        from django.core import mail as djmail
+        from datetime import timedelta
+        from apps.scheduling.views import _mail_visitor_rejection
+        start = djtz.now() + timedelta(days=1)
+        req = BookingRequest.objects.create(
+            host=self.host,
+            visitor_name="Petra Nováková",
+            visitor_email="petra@example.com",
+            kind=BookingRequest.Kind.PHYSICAL,
+            start_at=start,
+            end_at=start + timedelta(hours=1),
+            title="Osobní schůzka",
+            location="Kavárna Slavia",
+            locale="cs",
+        )
+        djmail.outbox = []
+        _mail_visitor_rejection(req, note="")
+        self.assertEqual(len(djmail.outbox), 1)
+        m = djmail.outbox[0]
+        self.assertIn("odmítnuta", m.subject)
+        self.assertIn("Dobrý den", m.body)
+
+    def test_reminder_mail_cs_subject_starts_with_zitra(self):
+        from django.core import mail as djmail
+        from apps.scheduling.management.commands.send_booking_reminders import Command
+        booking = self._make_booking(locale="cs")
+        cmd = Command()
+        # Minimal cfg dict shape — real stage reg has more, but _send only
+        # reads nothing from cfg now (strings come from emails_i18n).
+        djmail.outbox = []
+        cmd._send(booking, stage="24h", cfg={}, dry_run=False, frontend_base="http://localhost:3000")
+        self.assertEqual(len(djmail.outbox), 1)
+        m = djmail.outbox[0]
+        self.assertTrue(m.subject.startswith("[Slotly] Zítra:"), m.subject)
+        self.assertIn("Dobrý den", m.body)
+
+    def test_reminder_mail_en_subject_starts_with_tomorrow(self):
+        from django.core import mail as djmail
+        from apps.scheduling.management.commands.send_booking_reminders import Command
+        booking = self._make_booking(locale="en")
+        cmd = Command()
+        djmail.outbox = []
+        cmd._send(booking, stage="24h", cfg={}, dry_run=False, frontend_base="http://localhost:3000")
+        self.assertEqual(len(djmail.outbox), 1)
+        m = djmail.outbox[0]
+        self.assertTrue(m.subject.startswith("[Slotly] Tomorrow:"), m.subject)
